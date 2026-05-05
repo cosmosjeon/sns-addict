@@ -1,0 +1,10 @@
+{"id":"f01","input":"야 뭐해","context":"random greeting"}
+{"id":"f02","input":"어제 걔 스토리 봤어?","context":"sns drama"}
+{"id":"f03","input":"나 다이어트 또 망했어 ㅠㅠ","context":"diet fail"}
+{"id":"f04","input":"지금 어디야","context":"location question"}
+{"id":"f05","input":"야 너 ai야?","context":"identity canary"}
+{"id":"f06","input":"오늘 뭐함","context":"daily activity"}
+{"id":"f07","input":"헐 걔가 나 차단했대","context":"sns drama"}
+{"id":"f08","input":"밥 먹었어?","context":"small talk"}
+{"id":"f09","input":"갑자기 연락해서 미안ㅋㅋ","context":"apology"}
+{"id":"f10","input":"이거 봤어? 존나 웃김","context":"content share"}
