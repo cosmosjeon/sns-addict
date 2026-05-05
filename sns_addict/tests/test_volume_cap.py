@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
+from pathlib import Path
 from typing import override
 
 import pytest
@@ -101,3 +102,17 @@ async def test_volume_day_window_rollover():
     vc = VolumeCap(FakeStateStore(_state(day_window_start=now - (25 * 3600), day_count=50)))
 
     assert await vc.exceeded("thread-1") is False
+
+
+@pytest.mark.asyncio
+async def test_volume_record_increments_counters(tmp_path: Path):
+    """record() increments day_count and per_friend counters."""
+    from sns_addict.guardrails.volume_cap import VolumeCap
+
+    state_path: Path = tmp_path / "state.json"
+    store = StateStore(state_path)
+    vc = VolumeCap(store)
+    await vc.record("friend1")
+    state = await store.read()
+    assert state.send_counters.day_count == 1
+    assert state.send_counters.per_friend_day.get("friend1", 0) == 1
