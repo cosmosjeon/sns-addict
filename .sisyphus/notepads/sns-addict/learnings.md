@@ -9,3 +9,7 @@
 - `freezegun` works cleanly for `time.time()`-based guardrail tests and for `datetime.datetime.now()`-based quiet-hours checks.
 - A tiny `StateStore` subclass with `@override` is enough to satisfy type checks when mocking `VolumeCap` state reads.
 - Guardrail tests stay diagnostics-clean when fixture params are annotated (`Path`, `pytest.MonkeyPatch`) and module constants are monkeypatched instead of touching real `~/.hermes` paths.
+# 2026-05-05
+- FastAPI TestClient needs `httpx` installed in the venv; otherwise dashboard route tests fail at collection.
+- For persistence round-trips, set `pending_sends[*].queued_at` far enough in the future to avoid `_age_pending_sends()` mutating the payload.
+- `StateStore.read()` corruption recovery renames the bad file to `*.json.corrupt-<ts>` and returns a fresh `State`.
