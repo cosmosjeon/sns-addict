@@ -1,5 +1,197 @@
-<!doctype html>
-<html lang="en">
-  <head><meta charset="utf-8"><title>sns-addict</title></head>
-  <body>placeholder</body>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sns-addict</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <h1>sns-addict</h1>
+      <span class="brand-version">v0.1.0 · C1</span>
+    </div>
+    <div class="header-meta">
+      <span id="conn-indicator" class="conn-dot conn-idle" title="WebSocket"></span>
+      <span id="conn-label" class="conn-label">offline</span>
+    </div>
+  </header>
+
+  <div id="status-banner" class="banner banner-warn hidden" role="status"></div>
+
+  <nav class="tabs" role="tablist">
+    <button type="button" class="tab active" data-tab="home" role="tab" aria-selected="true">Home</button>
+    <button type="button" class="tab" data-tab="allowlist" role="tab" aria-selected="false">Allowlist</button>
+    <button type="button" class="tab" data-tab="live" role="tab" aria-selected="false">Live</button>
+    <button type="button" class="tab tab-disabled" data-tab="conversations" role="tab" aria-selected="false" disabled title="C2 scope">
+      Conversations
+      <span class="tab-badge">C2</span>
+    </button>
+  </nav>
+
+  <main class="content">
+
+    <section id="tab-home" class="tab-content active" role="tabpanel">
+      <div class="grid-2">
+        <article class="card card-status">
+          <header class="card-head">
+            <h2>Session</h2>
+            <span id="session-pill" class="pill pill-idle">unknown</span>
+          </header>
+          <dl class="kv">
+            <dt>state</dt><dd id="kv-state">—</dd>
+            <dt>mood</dt><dd id="kv-mood">—</dd>
+            <dt>since</dt><dd id="kv-since">—</dd>
+            <dt>f3 mode</dt><dd id="kv-f3">off</dd>
+          </dl>
+          <div class="controls">
+            <button type="button" id="btn-start" class="btn btn-primary" onclick="startSession()">
+              <span class="btn-glyph">▶</span> Start
+            </button>
+            <button type="button" id="btn-stop" class="btn btn-ghost" onclick="stopSession()">
+              <span class="btn-glyph">■</span> Stop
+            </button>
+            <button type="button" id="btn-refresh" class="btn btn-link" onclick="loadStatus()" title="Refresh status">↻</button>
+          </div>
+        </article>
+
+        <article class="card card-stats">
+          <header class="card-head">
+            <h2>오늘</h2>
+            <span class="muted small" id="stats-stamp">—</span>
+          </header>
+          <div class="stat-grid">
+            <div class="stat">
+              <span class="stat-value" id="stat-replies">0</span>
+              <span class="stat-label">replies sent</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="stat-events">0</span>
+              <span class="stat-label">events (live)</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="stat-friends">0</span>
+              <span class="stat-label">allowlist</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="stat-uptime">—</span>
+              <span class="stat-label">uptime</span>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <details class="advanced">
+        <summary>
+          <span class="adv-glyph">⚙</span>
+          Advanced — F3 Testing
+          <span class="adv-warn">(plaintext capture · destructive)</span>
+        </summary>
+        <div class="advanced-body">
+          <div id="f3-banner" class="banner banner-danger hidden" role="alert">
+            ⚠️ F3 mode active: <code>replies-f3.jsonl</code>에 plaintext 저장 중
+          </div>
+
+          <p class="advanced-note">
+            F3 모드는 <strong>voice scoring</strong>을 위해 어시스턴트가 보낸 reply의 plaintext를
+            로컬 파일에 기록합니다. <strong>협력자의 명시적 동의</strong> 없이는 활성화할 수 없습니다.
+          </p>
+
+          <label class="check">
+            <input type="checkbox" id="f3-consent">
+            <span>협력자 동의 확인됨 <span class="muted small">(collaborator consent confirmed)</span></span>
+          </label>
+
+          <label class="check">
+            <input type="checkbox" id="f3-toggle" disabled onchange="toggleF3Mode()">
+            <span>
+              F3 Testing Mode
+              <span class="muted small">— plaintext replies capture for voice scoring · REQUIRES collaborator consent</span>
+            </span>
+          </label>
+
+          <p id="f3-hint" class="muted small">consent 체크박스를 먼저 활성화하세요.</p>
+        </div>
+      </details>
+    </section>
+
+    <section id="tab-allowlist" class="tab-content hidden" role="tabpanel">
+      <article class="card">
+        <header class="card-head">
+          <h2>Allowlist</h2>
+          <span class="muted small" id="allowlist-count">0 friends</span>
+        </header>
+
+        <form class="form-row" onsubmit="addFriend(event)">
+          <input
+            type="text"
+            name="username"
+            id="input-username"
+            placeholder="instagram_username"
+            autocomplete="off"
+            spellcheck="false"
+            required
+          >
+          <select name="friendliness" id="input-friendliness" title="friendliness">
+            <option value="medium" selected>medium</option>
+            <option value="high">high</option>
+            <option value="low">low</option>
+          </select>
+          <input
+            type="text"
+            name="topics"
+            id="input-topics"
+            placeholder="topics (comma separated, optional)"
+            autocomplete="off"
+          >
+          <button type="submit" class="btn btn-primary add-friend">＋ Add Friend</button>
+        </form>
+
+        <div id="allowlist-error" class="banner banner-danger hidden"></div>
+
+        <ul id="friend-list" class="friend-list">
+          <li class="empty muted small">아직 추가된 친구가 없습니다.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section id="tab-live" class="tab-content hidden" role="tabpanel">
+      <article class="card card-flush">
+        <header class="card-head">
+          <h2>Live events</h2>
+          <div class="head-actions">
+            <span class="muted small" id="event-count">0 events</span>
+            <button type="button" class="btn btn-link" onclick="clearEvents()" title="Clear log">clear</button>
+          </div>
+        </header>
+        <div id="event-log" class="event-log" aria-live="polite">
+          <div class="empty muted small">대기 중 — events.jsonl에 새 entry가 추가되면 여기에 표시됩니다.</div>
+        </div>
+      </article>
+    </section>
+
+    <section id="tab-conversations" class="tab-content hidden" role="tabpanel">
+      <article class="card card-disabled">
+        <header class="card-head">
+          <h2>Conversations</h2>
+          <span class="pill pill-idle">C2 scope</span>
+        </header>
+        <p class="muted">
+          Conversations 탭은 <strong>C2</strong>에서 구현됩니다. v0.1.0(C1)에서는 사용할 수 없습니다.
+        </p>
+      </article>
+    </section>
+
+  </main>
+
+  <footer class="app-footer">
+    <span class="muted small">sns-addict · local single-tenant · localhost:8765</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
 </html>
