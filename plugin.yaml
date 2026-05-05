@@ -1,0 +1,12 @@
+name: sns_addict
+label: "SNS Addict (Instagram)"
+version: "0.1.0"
+description: "Korean SNS persona Instagram bot via browser automation"
+author: cosmosjeon
+license: MIT
+entry_point: sns_addict
+platform_hint: instagram
+emoji: "📸"
+requires:
+  hermes: ">=0.12.0"
+  python: ">=3.10"

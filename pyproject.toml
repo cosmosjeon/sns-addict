@@ -1,0 +1,38 @@
+[project]
+name = "sns-addict"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "patchright==1.55.2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "jinja2>=3.1.0",
+    "pydantic>=2.0",
+    "aiofiles>=24.0",
+    "ruamel.yaml>=0.18.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=1.0", "pytest-mock>=3.14", "pytest-cov>=5.0", "freezegun>=1.5.0", "ruff>=0.5.0"]
+
+[project.entry-points."hermes.plugins"]
+sns_addict = "sns_addict:register"
+
+[project.scripts]
+sns-addict = "sns_addict.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["sns_addict/tests"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["sns_addict*"]
+exclude = ["assets*", "docs*", "tools*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
