@@ -36,6 +36,8 @@ class State(BaseModel):
     pending_sends: list[dict[str, Any]] = Field(default_factory=list)
     frozen_threads: list[str] = Field(default_factory=list)
     send_counters: SendCounters = Field(default_factory=SendCounters)
+    group_send_counters: dict[str, int] = Field(default_factory=dict)
+    group_send_window_start: float = Field(default_factory=time.time)
     session_state: Literal[
         "active", "paused", "stopped", "halted", "challenge_pending"
     ] = "stopped"
