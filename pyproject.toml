@@ -29,6 +29,13 @@ testpaths = ["sns_addict/tests"]
 [tool.setuptools]
 include-package-data = true
 
+[tool.setuptools.package-data]
+sns_addict = [
+    "dashboard/static/index.html",
+    "dashboard/static/app.js",
+    "dashboard/static/style.css",
+]
+
 [tool.setuptools.packages.find]
 include = ["sns_addict*"]
 exclude = ["assets*", "docs*", "tools*"]
