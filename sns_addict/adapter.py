@@ -124,6 +124,7 @@ from sns_addict.detection.dom_observer import inject_dom_observer
 from sns_addict.guardrails.halt_now import HaltNow, watch_soul_md
 from sns_addict.persistence.events import append_event
 from sns_addict.persistence.state import State, StateStore
+from sns_addict.utils.long_run import AutoStop, SleepRecovery
 
 STATE_STORE = StateStore()
 REPLIES_F3_PATH = Path.home() / ".hermes" / "sns-addict" / "logs" / "replies-f3.jsonl"
@@ -169,6 +170,8 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._halt_task: Optional[asyncio.Task[None]] = None
         self._soul_task: Optional[asyncio.Task[None]] = None
         self._state_watcher_task: Optional[asyncio.Task[None]] = None
+        self._auto_stop_task: Optional[asyncio.Task[None]] = None
+        self._sleep_recovery_task: Optional[asyncio.Task[None]] = None
 
     def set_inbound_loop(self, inbound_loop: Any) -> None:
         """Wire the InboundLoop master orchestrator (W3.2)."""
@@ -191,6 +194,8 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         await inject_dom_observer(page, self._on_dom_event)
         self._halt_task = asyncio.create_task(HaltNow().watch(self))
         self._soul_task = asyncio.create_task(watch_soul_md())
+        self._auto_stop_task = asyncio.create_task(AutoStop(self).watch())
+        self._sleep_recovery_task = asyncio.create_task(SleepRecovery(self).watch())
         await STATE_STORE.update(_set_session_active)
         self._mark_connected()
         logger.info("SnsAddictAdapter connected")
@@ -201,7 +206,12 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         if not self.is_connected and self._session is None:
             return
         self._mark_disconnected()
-        for task in (self._halt_task, self._soul_task):
+        for task in (
+            self._halt_task,
+            self._soul_task,
+            self._auto_stop_task,
+            self._sleep_recovery_task,
+        ):
             if task is not None and not task.done():
                 task.cancel()
         if self._inbound_loop is not None:

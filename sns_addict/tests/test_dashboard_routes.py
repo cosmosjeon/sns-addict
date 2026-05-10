@@ -76,11 +76,3 @@ def test_control_start_changes_state(tmp_path: Path, monkeypatch) -> None:
     assert response.json()["ok"] is True
     assert response.json()["session_state"] == "active"
     assert asyncio.run(store.read()).session_state == "active"
-
-
-def test_alerts_return_501() -> None:
-    from sns_addict.dashboard.server import app
-
-    client = TestClient(app)
-
-    assert client.get("/api/alerts/anything").status_code == 501

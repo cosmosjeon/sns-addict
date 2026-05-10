@@ -41,6 +41,7 @@ class State(BaseModel):
     ] = "stopped"
     halt_reason: str | None = None
     f3_mode: bool = False
+    alerts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 StateCallback = Union[Callable[[State], State], Callable[[State], Awaitable[State]]]
