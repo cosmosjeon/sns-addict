@@ -13,6 +13,7 @@ async def test_inject_calls_expose_function_and_init_script():
     page = MagicMock()
     page.expose_function = AsyncMock(return_value=None)
     page.add_init_script = AsyncMock(return_value=None)
+    page.evaluate = AsyncMock(return_value=None)
     cb = AsyncMock(return_value=None)
 
     await inject_dom_observer(page, cb)
@@ -22,20 +23,21 @@ async def test_inject_calls_expose_function_and_init_script():
 
 
 @pytest.mark.asyncio
-async def test_only_unread_badge_dispatches():
-    """Observer script only dispatches on unread badge detection."""
+async def test_polling_detects_unread_hints():
+    """Observer script uses polling and detects unread text hints."""
     from sns_addict.detection.dom_observer import inject_dom_observer
 
     page = MagicMock()
     page.expose_function = AsyncMock(return_value=None)
     page.add_init_script = AsyncMock(return_value=None)
+    page.evaluate = AsyncMock(return_value=None)
 
     await inject_dom_observer(page, AsyncMock(return_value=None))
     script = page.add_init_script.await_args.args[0]
 
-    assert "if (unread)" in script
-    assert '[aria-label*="읽지 않음"' in script
-    assert '[aria-label*="Unread"]' in script
+    assert "setInterval" in script
+    assert "new message" in script
+    assert "개의 새 메시지" in script
     assert "window.__sns_dom_event({" in script
 
 
@@ -47,6 +49,7 @@ async def test_event_payload_shape():
     page = MagicMock()
     page.expose_function = AsyncMock(return_value=None)
     page.add_init_script = AsyncMock(return_value=None)
+    page.evaluate = AsyncMock(return_value=None)
 
     await inject_dom_observer(page, AsyncMock(return_value=None))
     script = page.add_init_script.await_args.args[0]

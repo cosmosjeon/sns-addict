@@ -168,6 +168,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._session: Optional[BrowserSession] = None
         self._inbound_loop: Any = None
         self._halt_task: Optional[asyncio.Task[None]] = None
+        self._refresh_task: Optional[asyncio.Task[None]] = None
         self._soul_task: Optional[asyncio.Task[None]] = None
         self._state_watcher_task: Optional[asyncio.Task[None]] = None
         self._auto_stop_task: Optional[asyncio.Task[None]] = None
@@ -191,7 +192,79 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             )
         self._session = BrowserSession(profile_dir=profile_dir)
         page = await self._session.start()
-        await inject_dom_observer(page, self._on_dom_event)
+        try:
+            await append_event("adapter_browser_started", url=str(page.url)[:200])
+        except Exception:
+            pass
+        goto_ok = False
+        try:
+            await page.goto(
+                "https://www.instagram.com/direct/inbox/",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            goto_ok = True
+        except Exception as exc:
+            logger.warning("IG inbox navigation failed: %s", exc)
+            try:
+                await append_event("adapter_goto_failed", error=str(exc)[:200])
+            except Exception:
+                pass
+        try:
+            await append_event(
+                "adapter_after_goto",
+                url=str(page.url)[:200],
+                goto_ok=goto_ok,
+            )
+        except Exception:
+            pass
+        try:
+            await inject_dom_observer(page, self._on_dom_event)
+            try:
+                await append_event("adapter_observer_injected", url=str(page.url)[:200])
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning("DOM Observer injection failed: %s", exc)
+            try:
+                await append_event("adapter_observer_inject_failed", error=str(exc)[:200])
+            except Exception:
+                pass
+
+        try:
+            click_result = await page.evaluate("""
+                () => new Promise((resolve) => {
+                    let attempts = 0;
+                    const skip = ['메시지 보내기', 'Send Message', '내 메모', '새로운 메시지', '새 소식'];
+                    const tryClick = () => {
+                        attempts++;
+                        const items = document.querySelectorAll('[role="listitem"]');
+                        for (const it of items) {
+                            const txt = (it.textContent || '').trim();
+                            if (!txt || txt.length < 3) continue;
+                            if (skip.some(s => txt.includes(s))) continue;
+                            if (txt.includes('deski.ai') && txt.length < 30) continue;
+                            try {
+                                it.click();
+                                resolve({ok: true, attempts, text: txt.slice(0, 120)});
+                                return;
+                            } catch (e) {}
+                        }
+                        if (attempts > 40) {
+                            resolve({ok: false, attempts, last_count: items.length});
+                            return;
+                        }
+                        setTimeout(tryClick, 500);
+                    };
+                    tryClick();
+                })
+            """)
+            await append_event("thread_click_result", **click_result)
+            if click_result.get("ok"):
+                await asyncio.sleep(3)
+                await append_event("entered_thread", url=str(page.url)[:200])
+        except Exception as exc:
+            await append_event("thread_click_failed", error=str(exc)[:200])
         self._halt_task = asyncio.create_task(HaltNow().watch(self))
         self._soul_task = asyncio.create_task(watch_soul_md())
         self._auto_stop_task = asyncio.create_task(AutoStop(self).watch())
@@ -233,6 +306,16 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
     def _on_dom_event(self, event: dict[str, Any]) -> None:
         """DOM Observer callback — must return in < 50 ms (no awaits)."""
         try:
+            kind = str(event.get("kind") or "")
+            if kind in ("observer_alive", "observer_heartbeat", "inbound_likely"):
+                asyncio.create_task(
+                    append_event(
+                        f"dom_{kind}",
+                        thread_count=event.get("thread_count"),
+                        thread_href=event.get("thread_href"),
+                        preview=event.get("preview", ""),
+                    )
+                )
             asyncio.create_task(self._process_inbound(event))
         except RuntimeError as exc:
             logger.warning("_on_dom_event: no running loop, dropping event: %s", exc)

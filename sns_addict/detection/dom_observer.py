@@ -19,36 +19,179 @@ _OBSERVER_SCRIPT = """
     if (window.__snsAddictObserverInstalled) return;
     window.__snsAddictObserverInstalled = true;
 
-    window.__sns_observer = new MutationObserver((mutations) => {
-        for (const m of mutations) {
-            for (const node of m.addedNodes) {
-                if (node.nodeType !== 1) continue;
-                // unread badge 또는 새 thread item 감지
-                const unread = node.querySelector?.('[aria-label*="읽지 않음"], [aria-label*="Unread"]');
-                if (unread) {
-                    const thread = node.closest('[role="listitem"], a[href^="/direct/t/"]');
-                    if (thread) {
-                        window.__sns_dom_event({
-                            kind: 'inbound_likely',
-                            thread_href: thread.href || null,
-                            preview: thread.textContent?.slice(0, 100) || '',
-                            ts: Date.now(),
-                        });
-                    }
-                }
-            }
-        }
-    });
+    // Polling-based detector: compares thread list text every 3s.
+    // More robust than MutationObserver against Instagram's React re-renders
+    // and aria-label drift. Detects new threads OR text changes that indicate
+    // new inbound messages (e.g. "3 new messages", "개의 새 메시지").
+    const knownThreads = new Map();
+    let initialized = false;
 
-    const observe = () => {
-        const target = document.querySelector('[role="main"], [role="navigation"]');
-        if (target) {
-            window.__sns_observer.observe(target, { childList: true, subtree: true });
-        } else {
-            setTimeout(observe, 500);
+    const UNREAD_PATTERNS = [
+        'new message',
+        '개의 새 메시지',
+        '개의 안 읽은',
+        '읽지 않음',
+        'Unread',
+    ];
+
+    const hasUnreadHint = (text) => {
+        for (const p of UNREAD_PATTERNS) {
+            if (text.includes(p)) return true;
+        }
+        return false;
+    };
+
+    const stableKeyFor = (el) => {
+        // Prefer /direct/t/ href when present (most stable).
+        const link = el.tagName === 'A' ? el : (el.querySelector('a[href*="/direct/t/"]') || null);
+        const href = link?.getAttribute('href');
+        if (href) return { key: href, href };
+        // Else use the first non-empty line (typically the username) — stable across re-renders.
+        const text = (el.textContent || '').trim();
+        const firstLine = text.split('\\n').map(s => s.trim()).filter(Boolean)[0] || '';
+        return { key: 'name:' + firstLine.slice(0, 60), href: null };
+    };
+
+    let pollCount = 0;
+    let lastMainText = '';
+    let threadClicked = false;
+    const SKIP = ['메시지 보내기', 'Send Message', '내 메모', '새로운 메시지', '새 소식'];
+
+    const tryClickThread = () => {
+        if (threadClicked) return;
+        if (location.pathname.includes('/direct/t/')) {
+            threadClicked = true;
+            try {
+                window.__sns_dom_event({
+                    kind: 'observer_alive',
+                    thread_count: 1,
+                    preview: 'already in thread: ' + location.pathname,
+                    ts: Date.now(),
+                });
+            } catch (e) {}
+            return;
+        }
+        const items = document.querySelectorAll('[role="listitem"]');
+        for (const it of items) {
+            const txt = (it.textContent || '').trim();
+            if (!txt || txt.length < 3) continue;
+            if (SKIP.some(s => txt.includes(s))) continue;
+            if (txt.includes('deski.ai') && txt.length < 30) continue;
+            try {
+                it.click();
+                threadClicked = true;
+                window.__sns_dom_event({
+                    kind: 'observer_alive',
+                    thread_count: items.length,
+                    preview: 'clicked thread: ' + txt.slice(0, 80),
+                    ts: Date.now(),
+                });
+                return;
+            } catch (e) {}
         }
     };
-    observe();
+    const scanThreadView = () => {
+        const main = document.querySelector('[role="main"]');
+        if (!main) return;
+        const text = (main.textContent || '').slice(-500);
+        if (lastMainText && text !== lastMainText) {
+            try {
+                window.__sns_dom_event({
+                    kind: 'inbound_likely',
+                    thread_href: location.href,
+                    preview: text.slice(-200),
+                    ts: Date.now(),
+                });
+            } catch (e) {}
+        }
+        lastMainText = text;
+    };
+    const scanInbox = () => {
+        pollCount++;
+        tryClickThread();
+        if (location.pathname.includes('/direct/t/')) {
+            scanThreadView();
+            if (pollCount % 5 === 1) {
+                try {
+                    window.__sns_dom_event({
+                        kind: 'observer_heartbeat',
+                        thread_count: 1,
+                        preview: 'thread view poll #' + pollCount,
+                        ts: Date.now(),
+                    });
+                } catch (e) {}
+            }
+            return;
+        }
+        let threads = document.querySelectorAll('a[href^="/direct/t/"]');
+        if (threads.length === 0) {
+            threads = document.querySelectorAll('[role="listitem"]');
+        }
+        if (threads.length === 0) {
+            threads = document.querySelectorAll('div[role="button"][tabindex="0"]');
+        }
+        if (pollCount % 5 === 1) {
+            const previews = [];
+            for (let i = 0; i < threads.length; i++) {
+                const t = (threads[i].textContent || '').trim().slice(0, 100);
+                previews.push(t);
+            }
+            try {
+                window.__sns_dom_event({
+                    kind: 'observer_heartbeat',
+                    thread_count: threads.length,
+                    preview: 'poll #' + pollCount + ' | ' + previews.join(' || '),
+                    ts: Date.now(),
+                });
+            } catch (e) {}
+        }
+        let scanned = 0;
+        for (const t of threads) {
+            const text = (t.textContent || '').trim();
+            if (!text || text.length < 3) continue;
+            const { key, href } = stableKeyFor(t);
+            const prev = knownThreads.get(key);
+            scanned++;
+
+            if (initialized && prev !== undefined && prev !== text) {
+                try {
+                    window.__sns_dom_event({
+                        kind: 'inbound_likely',
+                        thread_href: href ? ('https://www.instagram.com' + href) : null,
+                        preview: text.slice(0, 200),
+                        ts: Date.now(),
+                    });
+                } catch (e) {}
+            }
+            knownThreads.set(key, text);
+        }
+        if (!initialized) {
+            try {
+                window.__sns_dom_event({
+                    kind: 'observer_alive',
+                    thread_count: scanned,
+                    preview: 'baseline scan',
+                    ts: Date.now(),
+                });
+            } catch (e) {}
+        }
+        initialized = true;
+    };
+
+    // Initial baseline + polling
+    setTimeout(() => {
+        try {
+            const threads = document.querySelectorAll('a[href^="/direct/t/"]');
+            window.__sns_dom_event({
+                kind: 'observer_alive',
+                thread_count: threads.length,
+                preview: 'observer ping',
+                ts: Date.now(),
+            });
+        } catch (e) {}
+        scanInbox();
+    }, 1500);
+    setInterval(scanInbox, 3000);
 })();
 """
 
@@ -68,4 +211,8 @@ async def inject_dom_observer(page: Any, on_dom_event: DomEventCallback) -> None
     """
     await page.expose_function("__sns_dom_event", on_dom_event)
     await page.add_init_script(_OBSERVER_SCRIPT)
+    try:
+        await page.evaluate(_OBSERVER_SCRIPT)
+    except Exception as exc:
+        logger.warning("DOM Observer immediate eval failed: %s", exc)
     logger.info("DOM Observer injected")
