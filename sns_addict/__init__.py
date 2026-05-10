@@ -15,18 +15,12 @@ def register(ctx: Any) -> None:
 
     def check_fn() -> bool:
         try:
-            import subprocess
-
-            result = subprocess.run(
-                ["patchright", "install", "--help"],
-                capture_output=True,
-                timeout=5,
-            )
-            return result.returncode == 0
-        except Exception:
+            import patchright  # noqa: F401
+            return True
+        except ImportError:
             return False
 
-    def validate_config(cfg: Any) -> None:
+    def validate_config(cfg: Any) -> bool:
         port = getattr(cfg, "dashboard_port", None)
         if port is None:
             extra = getattr(cfg, "extra", None)
@@ -41,23 +35,12 @@ def register(ctx: Any) -> None:
 
         extra = getattr(cfg, "extra", {}) or {}
         try:
-            instagram = extra.get("instagram", {}) or {}
             soul_path = extra.get("soul_path", None)
         except AttributeError:
-            instagram = {}
             soul_path = None
-        try:
-            username = instagram.get("username")
-            password = instagram.get("password")
-        except AttributeError:
-            username = None
-            password = None
-        if not username:
-            raise ValueError("Missing required config: instagram.username")
-        if not password:
-            raise ValueError("Missing required config: instagram.password")
         if soul_path is not None and not soul_path:
             raise ValueError("soul_path must be a non-empty string if specified")
+        return True
 
     def is_connected() -> bool:
         return False
