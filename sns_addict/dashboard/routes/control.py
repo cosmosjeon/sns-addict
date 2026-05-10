@@ -47,6 +47,20 @@ async def get_status() -> dict[str, Any]:
     }
 
 
+@router.get("/llm_backend")
+async def get_llm_backend_status() -> dict[str, Any]:
+    return _runtime_supervisor().health().get(
+        "llm_backend",
+        {
+            "backend_name": "Unknown",
+            "available": False,
+            "model": None,
+            "setup_hint": "LLM backend status unavailable; drafts may fail.",
+            "hermes_auxiliary_importable": False,
+        },
+    )
+
+
 @router.post("/start")
 async def start_session() -> dict[str, Any]:
     async def _set_active(s: Any) -> Any:

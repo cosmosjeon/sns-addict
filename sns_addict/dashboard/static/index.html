@@ -76,6 +76,11 @@
           <dt>runtime</dt><dd id="kv-runtime-health">—</dd>
           <dt>llm</dt><dd id="kv-llm-health">—</dd>
         </dl>
+        <p class="muted small">
+          LLM backend uses Hermes when available; standalone mode can use
+          OPENAI_API_KEY/OPENAI_MODEL or OPENROUTER_API_KEY/OPENROUTER_MODEL.
+          If unavailable, drafts may queue a placeholder diagnostic or fail.
+        </p>
         <p id="login-error" class="banner banner-danger hidden" role="alert"></p>
       </article>
 

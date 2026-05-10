@@ -138,9 +138,19 @@ function renderRuntimeHealth(health) {
   }
   const connected = health.browser_connected ? "browser connected" : "browser not connected";
   runtimeEl.textContent = `${health.status || "unknown"} · ${connected}`;
-  llmEl.textContent = health.llm_available ? "available" : "drafts may fail";
-  if (health.warning) {
-    llmEl.textContent = `${llmEl.textContent} · ${health.warning}`;
+  const backend = health.llm_backend || {
+    backend_name: "LLM backend",
+    available: !!health.llm_available,
+    setup_hint: health.warning || "",
+  };
+  const backendName = backend.backend_name || "LLM backend";
+  const model = backend.model ? ` · ${backend.model}` : "";
+  if (backend.available) {
+    llmEl.textContent = `${backendName} available${model}`;
+  } else {
+    const hint = backend.setup_hint || health.warning ||
+      "LLM backend unavailable; drafts may queue placeholder diagnostics or fail until Hermes/plugin or an env API key is configured.";
+    llmEl.textContent = `${backendName} unavailable · ${hint}`;
   }
 }
 

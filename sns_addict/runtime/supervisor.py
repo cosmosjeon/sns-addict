@@ -105,9 +105,10 @@ class RuntimeSupervisor:
     def health(self) -> dict[str, Any]:
         task_active = self._task is not None and not self._task.done()
         browser_connected = bool(getattr(self._adapter, "is_connected", False))
-        llm_available = _llm_available()
-        warning = None if llm_available else (
-            "Hermes auxiliary LLM unavailable; observing can run, but drafts may fail."
+        llm_backend = _llm_backend_status()
+        warning = None if llm_backend["available"] else (
+            llm_backend.get("setup_hint")
+            or "LLM backend unavailable; observing can run, but drafts may fail."
         )
         return {
             "status": self._status,
@@ -116,7 +117,8 @@ class RuntimeSupervisor:
             "started_at": self._started_at,
             "updated_at": self._updated_at,
             "last_error": self._last_error,
-            "llm_available": llm_available,
+            "llm_available": llm_backend["available"],
+            "llm_backend": llm_backend,
             "warning": warning,
         }
 
@@ -204,10 +206,22 @@ class RuntimeSupervisor:
             logger.debug("failed to clear HALT_NOW: %s", exc)
 
 
-def _llm_available() -> bool:
+def _llm_backend_status() -> dict[str, Any]:
     try:
         from sns_addict import adapter as adapter_mod  # noqa: PLC0415
+        from sns_addict.llm_backend import llm_backend_status  # noqa: PLC0415
 
-        return bool(getattr(adapter_mod, "_hermes_auxiliary_available", False))
+        return llm_backend_status(
+            hermes_getter=getattr(adapter_mod, "get_async_text_auxiliary_client"),
+            hermes_auxiliary_importable=bool(
+                getattr(adapter_mod, "_hermes_auxiliary_available", False)
+            ),
+        ).to_dict()
     except Exception:
-        return False
+        return {
+            "backend_name": "Unknown",
+            "available": False,
+            "model": None,
+            "setup_hint": "LLM backend status check failed; drafts may fail.",
+            "hermes_auxiliary_importable": False,
+        }

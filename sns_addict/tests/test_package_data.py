@@ -25,3 +25,14 @@ def test_dashboard_static_files_are_declared_as_package_data() -> None:
 def test_dashboard_static_source_files_exist() -> None:
     for file_path in REQUIRED_PACKAGE_FILES:
         assert file_path.exists(), f"missing required package data source: {file_path}"
+
+
+def test_dashboard_surfaces_llm_backend_setup_guidance() -> None:
+    index = Path("sns_addict/dashboard/static/index.html").read_text(encoding="utf-8")
+    app = Path("sns_addict/dashboard/static/app.js").read_text(encoding="utf-8")
+
+    assert "LLM backend uses Hermes when available" in index
+    assert "OPENAI_API_KEY" in index
+    assert "OPENROUTER_API_KEY" in index
+    assert "backend.setup_hint" in app
+    assert "LLM backend unavailable" in app

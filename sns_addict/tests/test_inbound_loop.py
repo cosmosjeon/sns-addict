@@ -662,7 +662,7 @@ async def test_approval_mode_enqueues_diagnostic_when_llm_unavailable(tmp_path: 
 
     state = await state_store.read()
     assert state.pending_sends
-    assert "LLM unavailable" in state.pending_sends[0]["proposed_reply"]
+    assert "LLM backend unavailable" in state.pending_sends[0]["proposed_reply"]
     adapter.send.assert_not_called()
     calls = [str(c) for c in mock_append.call_args_list]
     assert any("llm_draft_failed" in c for c in calls)

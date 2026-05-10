@@ -19,6 +19,13 @@ class FakeRuntimeSupervisor:
             "runtime_task_active": False,
             "browser_connected": False,
             "llm_available": False,
+            "llm_backend": {
+                "backend_name": "Unconfigured",
+                "available": False,
+                "model": None,
+                "setup_hint": "LLM backend unavailable for test",
+                "hermes_auxiliary_importable": False,
+            },
             "warning": "test",
         }
 
@@ -86,6 +93,11 @@ def test_control_status_returns_state(tmp_path: Path, monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["session_state"] == "paused"
     assert response.json()["runtime_health"]["status"] == "stopped"
+    assert response.json()["runtime_health"]["llm_backend"]["available"] is False
+
+    llm_response = client.get("/api/control/llm_backend")
+    assert llm_response.status_code == 200
+    assert llm_response.json()["backend_name"] == "Unconfigured"
 
 
 def test_control_start_changes_state(tmp_path: Path, monkeypatch) -> None:

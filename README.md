@@ -61,6 +61,22 @@ Safe defaults:
 - Ambiguous/group metadata fails closed.
 - `HALT_NOW` and Emergency Stop block sends.
 
+## LLM backend
+
+Reply drafting prefers Hermes Agent when the app runs as a Hermes plugin/profile and `agent.auxiliary_client` is available. In standalone `sns-addict start` / npm wrapper mode, configure an OpenAI-compatible fallback before expecting real drafts:
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_MODEL="gpt-4o-mini"          # optional
+export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional
+
+# OR OpenRouter
+export OPENROUTER_API_KEY="..."
+export OPENROUTER_MODEL="openai/gpt-4o-mini"
+```
+
+The dashboard shows the active LLM backend and setup hint. If no backend is configured, the observer can still detect allowlisted inbound DMs in `approval` mode, but the proposal is a diagnostic placeholder instead of a sendable persona draft.
+
 ## Runtime modes
 
 | Mode | Behavior |

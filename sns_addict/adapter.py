@@ -122,6 +122,7 @@ except ImportError:
 from sns_addict.browser.session import BrowserSession  # noqa: E402
 from sns_addict.detection.dom_observer import inject_dom_observer  # noqa: E402
 from sns_addict.guardrails.halt_now import HaltNow, watch_soul_md  # noqa: E402
+from sns_addict.llm_backend import resolve_llm_backend  # noqa: E402
 from sns_addict.persistence.events import append_event  # noqa: E402
 from sns_addict.persistence.state import State, StateStore  # noqa: E402
 from sns_addict.utils.long_run import AutoStop, SleepRecovery  # noqa: E402
@@ -588,19 +589,24 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         }
 
     async def invoke_llm(self, event: dict[str, Any]) -> str:
-        """Call LLM via Hermes-auth auxiliary_client. Returns reply string only — never sends.
+        """Call the configured LLM backend. Returns reply string only — never sends.
 
-        Uses the Hermes-auth credential chain (codex/nous/openrouter) via
-        ``get_async_text_auxiliary_client``. SOUL.md is injected as the system
-        prompt; the inbound thread text becomes the user message body.
-        Raises ``RuntimeError`` when no auxiliary client is available, and
-        ``ValueError`` when the LLM returns an empty/null response.
+        Hermes auxiliary clients remain the first choice. In standalone/npm
+        installs, explicit OpenAI-compatible environment configuration can act
+        as a fallback. SOUL.md is injected as the system prompt; the inbound
+        thread text becomes the user message body. Raises ``RuntimeError`` when
+        no backend is available, and ``ValueError`` when the LLM returns an
+        empty/null response.
         """
-        client, model = get_async_text_auxiliary_client("sns_addict_reply")
+        backend = resolve_llm_backend(
+            "sns_addict_reply",
+            hermes_getter=get_async_text_auxiliary_client,
+            hermes_auxiliary_importable=_hermes_auxiliary_available,
+        )
+        client, model = backend.client, backend.model
         if client is None:
-            raise RuntimeError(
-                "No auxiliary client available — check hermes auth"
-            )
+            hint = backend.status.setup_hint or "No LLM backend available"
+            raise RuntimeError(hint)
 
         soul_path = Path.home() / ".hermes" / "SOUL.md"
         soul_content = soul_path.read_text(encoding="utf-8") if soul_path.exists() else ""

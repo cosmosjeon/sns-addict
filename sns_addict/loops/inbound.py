@@ -231,7 +231,7 @@ class InboundLoop:
                 return
 
             # Step 4 — LLM (thinking pause + invoke). In approval mode, an
-            # unavailable auxiliary LLM should still prove that the inbound DM
+            # unavailable LLM backend should still prove that the inbound DM
             # was detected by surfacing a non-sendable diagnostic proposal.
             thinking_delay = self._humanizer.next_pause("thinking")
             await asyncio.sleep(thinking_delay)
@@ -247,8 +247,8 @@ class InboundLoop:
                 if latest_mode == "approval":
                     await self._enqueue_proposal(
                         event,
-                        "[LLM unavailable — inbound DM detected, but draft generation failed. "
-                        "Check Hermes auxiliary LLM auth/config before approving replies.]",
+                        "[LLM backend unavailable — inbound DM detected, but draft generation failed. "
+                        "Configure Hermes/plugin auth or standalone OPENAI_API_KEY/OPENROUTER_API_KEY before approving replies.]",
                         latest_mode,
                     )
                 return

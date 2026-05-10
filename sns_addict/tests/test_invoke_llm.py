@@ -61,15 +61,17 @@ async def test_invoke_llm_returns_string(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_invoke_llm_none_client_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """No auxiliary client available → invoke_llm raises RuntimeError."""
+    """No LLM backend available → invoke_llm raises RuntimeError."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     with patch(
         "sns_addict.adapter.get_async_text_auxiliary_client",
         return_value=(None, None),
     ):
         adapter = _build_adapter()
-        with pytest.raises(RuntimeError, match="No auxiliary client available"):
+        with pytest.raises(RuntimeError, match="LLM backend unavailable"):
             await adapter.invoke_llm({"text": "hi"})
 
 
