@@ -15,13 +15,20 @@ from sns_addict.persistence.state import State
 def _build(
     *,
     mood: str = "낮",
+    runtime_mode: str = "autopilot_lite",
     friends: list[str] | None = None,
     volume_exceeded: bool = False,
 ):
     from sns_addict.loops.active_behavior import ActiveBehavior
 
     state_store = MagicMock()
-    state_store.read = AsyncMock(return_value=State(current_mood=mood))
+    state_store.read = AsyncMock(
+        return_value=State(
+            current_mood=mood,
+            runtime_mode=runtime_mode,  # type: ignore[arg-type]
+            session_state="active" if runtime_mode != "stopped" else "stopped",
+        )
+    )
 
     allowlist_store = MagicMock()
     allowlist_store.read = AsyncMock(
@@ -78,6 +85,33 @@ async def test_allowlist_check():
     behavior, adapter, volume_cap = _build(friends=["someone-else"])
 
     result = await behavior.send_active_dm(adapter, "stranger", "hi")
+
+    assert result is False
+    volume_cap.exceeded.assert_not_called()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unsolicited_first_message_blocked_even_when_allowlisted():
+    """Autopilot-lite never initiates a new DM on its own."""
+    behavior, adapter, volume_cap = _build(friends=["friend-1"])
+
+    result = await behavior.send_active_dm(adapter, "friend-1", "hi")
+
+    assert result is False
+    volume_cap.exceeded.assert_awaited_once_with("friend-1")
+    volume_cap.record.assert_not_called()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_autopilot_runtime_blocks_active_dm():
+    behavior, adapter, volume_cap = _build(
+        runtime_mode="approval",
+        friends=["friend-1"],
+    )
+
+    result = await behavior.send_active_dm(adapter, "friend-1", "hi")
 
     assert result is False
     volume_cap.exceeded.assert_not_called()

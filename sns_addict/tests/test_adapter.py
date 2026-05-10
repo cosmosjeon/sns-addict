@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +45,7 @@ async def test_connect_starts_browser_session(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(adapter_mod, "inject_dom_observer", AsyncMock(return_value=None))
     monkeypatch.setattr(adapter_mod, "HaltNow", MagicMock(return_value=mock_halt))
     monkeypatch.setattr(adapter_mod, "watch_soul_md", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter_mod, "append_event", AsyncMock(return_value=None))
     monkeypatch.setattr(adapter_mod.STATE_STORE, "update", AsyncMock(return_value=None))
 
     assert await adapter.connect() is True
@@ -73,3 +75,101 @@ async def test_disconnect_cancels_watchers(monkeypatch: pytest.MonkeyPatch) -> N
     mock_session.stop.assert_awaited_once()
     adapter._halt_task.cancel.assert_called_once()
     adapter._soul_task.cancel.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_read_thread_metadata_returns_explicit_dm_username() -> None:
+    from sns_addict.adapter import _read_thread_metadata
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(
+        return_value={"title": "Friend Name", "is_group": False, "usernames": ["friend_1"]}
+    )
+
+    assert await _read_thread_metadata(page) == {
+        "chat_type": "dm",
+        "username": "friend_1",
+        "is_group": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_read_thread_metadata_marks_groups_not_dm() -> None:
+    from sns_addict.adapter import _read_thread_metadata
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value={"title": "alice, bob", "is_group": True})
+
+    assert await _read_thread_metadata(page) == {"chat_type": "group", "is_group": True}
+
+
+@pytest.mark.asyncio
+async def test_read_thread_metadata_single_title_without_profile_link_is_unknown() -> None:
+    from sns_addict.adapter import _read_thread_metadata
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(
+        return_value={"title": "friend_1", "is_group": False, "usernames": []}
+    )
+
+    assert await _read_thread_metadata(page) == {
+        "chat_type": "unknown",
+        "is_group": False,
+        "title": "friend_1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_read_thread_metadata_multiple_profile_links_is_unknown() -> None:
+    from sns_addict.adapter import _read_thread_metadata
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(
+        return_value={"title": "friends", "is_group": False, "usernames": ["alice", "bob"]}
+    )
+
+    assert await _read_thread_metadata(page) == {
+        "chat_type": "unknown",
+        "is_group": False,
+        "title": "friends",
+    }
+
+
+@pytest.mark.asyncio
+async def test_complete_approved_send_records_volume_counter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sns_addict import adapter as adapter_mod
+    from sns_addict.persistence.state import State, StateStore
+
+    store = StateStore(tmp_path / "state.json")
+    await store.write(
+        State(
+            session_state="active",
+            runtime_mode="approval",
+            pending_sends=[
+                {
+                    "id": "proposal-1",
+                    "status": "sending",
+                    "thread_id": "thread-1",
+                    "proposed_reply": "exact queued reply",
+                }
+            ],
+        )
+    )
+    monkeypatch.setattr(adapter_mod, "STATE_STORE", store)
+    monkeypatch.setattr(adapter_mod, "append_event", AsyncMock(return_value=None))
+    adapter = adapter_mod.SnsAddictAdapter(adapter_mod.PlatformConfig())
+
+    await adapter._complete_approved_send(
+        "proposal-1",
+        adapter_mod.SendResult(success=True, message_id="sent-1"),
+    )
+
+    state = await store.read()
+    assert state.pending_sends[0]["status"] == "sent"
+    assert state.pending_sends[0]["sent_message_id"] == "sent-1"
+    assert state.send_counters.day_count == 1
+    assert state.send_counters.per_friend_day["thread-1"] == 1
+    assert len(state.send_counters.per_friend_hour["thread-1"]) == 1
