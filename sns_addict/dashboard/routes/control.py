@@ -11,11 +11,24 @@ from pydantic import BaseModel
 
 from sns_addict.persistence.state import RuntimeMode, StateStore
 from sns_addict.persistence.events import append_event
+from sns_addict.runtime.supervisor import RuntimeSupervisor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _store = StateStore()
 _HALT_NOW = Path.home() / ".hermes" / "HALT_NOW"
+_supervisor: RuntimeSupervisor | None = None
+
+
+def _runtime_supervisor() -> RuntimeSupervisor:
+    global _supervisor  # noqa: PLW0603
+    if (
+        _supervisor is None
+        or _supervisor._state_store is not _store  # noqa: SLF001
+        or _supervisor._halt_path != _HALT_NOW  # noqa: SLF001
+    ):
+        _supervisor = RuntimeSupervisor(state_store=_store, halt_path=_HALT_NOW)
+    return _supervisor
 
 
 @router.get("/status")
@@ -27,6 +40,7 @@ async def get_status() -> dict[str, Any]:
         "current_mood": state.current_mood,
         "f3_mode": getattr(state, "f3_mode", False),
         "since": state.mood_started_at,
+        "runtime_health": _runtime_supervisor().health(),
         "approval_queue_count": len(
             [item for item in state.pending_sends if item.get("status") == "proposed"]
         ),
@@ -42,7 +56,13 @@ async def start_session() -> dict[str, Any]:
     _clear_halt_now()
     await _store.update(_set_active)
     await append_event("control_signal", action="start", runtime_mode="approval")
-    return {"ok": True, "session_state": "active", "runtime_mode": "approval"}
+    health = await _runtime_supervisor().start("approval")
+    return {
+        "ok": True,
+        "session_state": "active",
+        "runtime_mode": "approval",
+        "runtime_health": health,
+    }
 
 
 @router.post("/stop")
@@ -56,7 +76,13 @@ async def stop_session() -> dict[str, Any]:
     # Touch HALT_NOW to signal adapter
     _HALT_NOW.parent.mkdir(parents=True, exist_ok=True)
     _HALT_NOW.touch()
-    return {"ok": True, "session_state": "stopped", "runtime_mode": "stopped"}
+    health = await _runtime_supervisor().stop(touch_halt=True)
+    return {
+        "ok": True,
+        "session_state": "stopped",
+        "runtime_mode": "stopped",
+        "runtime_health": health,
+    }
 
 def _clear_halt_now() -> None:
     try:
@@ -89,12 +115,15 @@ async def set_runtime_mode(req: RuntimeModeRequest) -> dict[str, Any]:
     if req.mode == "stopped":
         _HALT_NOW.parent.mkdir(parents=True, exist_ok=True)
         _HALT_NOW.touch()
+        health = await _runtime_supervisor().stop(touch_halt=True)
     else:
         _clear_halt_now()
+        health = await _runtime_supervisor().start(req.mode)
     return {
         "ok": True,
         "runtime_mode": state.runtime_mode,
         "session_state": state.session_state,
+        "runtime_health": health,
     }
 
 

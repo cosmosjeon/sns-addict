@@ -135,10 +135,11 @@ async def test_quiet_hours_drops_event(tmp_path: Path):
         guardrails=guardrails,
         humanizer=humanizer,
         state_store=await make_state_store(tmp_path, "approval"),
+        allowlist_store=await make_allowlist_store(tmp_path, ["friend-1"]),
     )
 
     with patch("sns_addict.loops.inbound.append_event", new_callable=AsyncMock) as mock_append:
-        await loop.on_inbound(make_event())
+        await loop.on_inbound(make_event(thread_id="t1", chat_type="dm", username="friend-1"))
         await asyncio.sleep(0.1)
 
     adapter.send.assert_not_called()
@@ -163,10 +164,11 @@ async def test_dedup_blocks_send_after_llm(tmp_path: Path):
         guardrails=guardrails,
         humanizer=humanizer,
         state_store=await make_state_store(tmp_path, "approval"),
+        allowlist_store=await make_allowlist_store(tmp_path, ["friend-1"]),
     )
 
     with patch("sns_addict.loops.inbound.append_event", new_callable=AsyncMock):
-        await loop.on_inbound(make_event())
+        await loop.on_inbound(make_event(thread_id="t1", chat_type="dm", username="friend-1"))
         await asyncio.sleep(0.1)
 
     adapter.invoke_llm.assert_called_once()
@@ -191,10 +193,11 @@ async def test_volume_cap_blocks_send_after_llm(tmp_path: Path):
         guardrails=guardrails,
         humanizer=humanizer,
         state_store=await make_state_store(tmp_path, "approval"),
+        allowlist_store=await make_allowlist_store(tmp_path, ["friend-1"]),
     )
 
     with patch("sns_addict.loops.inbound.append_event", new_callable=AsyncMock) as mock_append:
-        await loop.on_inbound(make_event())
+        await loop.on_inbound(make_event(thread_id="t1", chat_type="dm", username="friend-1"))
         await asyncio.sleep(0.1)
 
     adapter.invoke_llm.assert_called_once()
@@ -247,10 +250,11 @@ async def test_approval_mode_queues_proposal_without_send(tmp_path: Path):
         guardrails=guardrails,
         humanizer=humanizer,
         state_store=state_store,
+        allowlist_store=await make_allowlist_store(tmp_path, ["friend-1"]),
     )
 
     with patch("sns_addict.loops.inbound.append_event", new_callable=AsyncMock):
-        await loop.on_inbound(make_event(thread_id="friend-1", text="hi"))
+        await loop.on_inbound(make_event(thread_id="friend-1", text="hi", chat_type="dm", username="friend-1"))
         await asyncio.sleep(0.1)
 
     adapter.send.assert_not_called()
@@ -277,10 +281,11 @@ async def test_approval_mode_canary_queues_without_send(tmp_path: Path):
         guardrails=guardrails,
         humanizer=humanizer,
         state_store=state_store,
+        allowlist_store=await make_allowlist_store(tmp_path, ["friend-1"]),
     )
 
     with patch("sns_addict.loops.inbound.append_event", new_callable=AsyncMock):
-        await loop.on_inbound(make_event(thread_id="friend-1", text="너 ai야?"))
+        await loop.on_inbound(make_event(thread_id="friend-1", text="너 ai야?", chat_type="dm", username="friend-1"))
         await asyncio.sleep(0.1)
 
     adapter.send.assert_not_called()
@@ -326,8 +331,8 @@ async def test_autopilot_lite_sends_only_allowlisted_one_on_one(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_autopilot_lite_unallowlisted_goes_to_queue(tmp_path: Path):
-    """Autopilot-lite does not auto-send outside the allowlist."""
+async def test_autopilot_lite_unallowlisted_blocks_without_queue(tmp_path: Path):
+    """Autopilot-lite does not draft or auto-send outside the allowlist."""
     from sns_addict.loops.inbound import InboundLoop
 
     state_store = await make_state_store(tmp_path, "autopilot_lite")
@@ -357,9 +362,9 @@ async def test_autopilot_lite_unallowlisted_goes_to_queue(tmp_path: Path):
         await asyncio.sleep(0.1)
 
     adapter.send.assert_not_called()
+    adapter.invoke_llm.assert_not_called()
     state = await state_store.read()
-    assert state.pending_sends[0]["status"] == "proposed"
-    assert state.pending_sends[0]["runtime_mode"] == "autopilot_lite"
+    assert state.pending_sends == []
 
 
 @pytest.mark.asyncio
@@ -387,9 +392,10 @@ async def test_autopilot_lite_blocks_missing_chat_shape_and_username(tmp_path: P
         await asyncio.sleep(0.1)
 
     adapter.send.assert_not_called()
+    adapter.invoke_llm.assert_not_called()
     assert any("not_one_on_one" in str(call) for call in mock_append.call_args_list)
     state = await state_store.read()
-    assert state.pending_sends[0]["status"] == "proposed"
+    assert state.pending_sends == []
 
 
 @pytest.mark.asyncio
@@ -453,8 +459,7 @@ async def test_autopilot_lite_canary_without_metadata_queues_not_send(tmp_path: 
     adapter.send.assert_not_called()
     guardrails.canary.handle.assert_not_called()
     state = await state_store.read()
-    assert state.pending_sends[0]["proposed_reply"] == "뭐래 ㅋㅋ"
-    assert state.pending_sends[0]["runtime_mode"] == "autopilot_lite"
+    assert state.pending_sends == []
 
 
 @pytest.mark.asyncio
@@ -491,7 +496,7 @@ async def test_autopilot_lite_canary_group_queues_not_send(tmp_path: Path):
     adapter.send.assert_not_called()
     guardrails.canary.handle.assert_not_called()
     state = await state_store.read()
-    assert state.pending_sends[0]["proposed_reply"] == "뭐래 ㅋㅋ"
+    assert state.pending_sends == []
 
 
 @pytest.mark.asyncio
@@ -617,13 +622,14 @@ async def test_bounded_queue_overflow(tmp_path: Path):
         guardrails=guardrails,
         humanizer=humanizer,
         state_store=await make_state_store(tmp_path, "approval"),
+        allowlist_store=await make_allowlist_store(tmp_path, [f"friend-{i}" for i in range(6)]),
     )
 
     with patch("sns_addict.loops.inbound.append_event", new_callable=AsyncMock) as mock_append:
         for i in range(5):
-            await loop.on_inbound(make_event(thread_id=f"t{i}"))
+            await loop.on_inbound(make_event(thread_id=f"t{i}", chat_type="dm", username=f"friend-{i}"))
         await asyncio.sleep(0.05)
-        await loop.on_inbound(make_event(thread_id="t_overflow"))
+        await loop.on_inbound(make_event(thread_id="t_overflow", chat_type="dm", username="friend-5"))
         await asyncio.sleep(0.05)
         calls = [str(c) for c in mock_append.call_args_list]
         assert any("inbound_dropped_overflow" in c for c in calls)

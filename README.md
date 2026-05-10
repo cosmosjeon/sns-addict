@@ -1,129 +1,139 @@
 # sns-addict
 
-> Korean SNS persona Instagram bot via browser automation
+> Local Hermes-powered supervised Instagram persona — not a growth/spam bot.
 
-sns-addict is a [Hermes](https://github.com/cosmosjeon/hermes) plugin that automates Instagram DM responses using the deski.ai persona (SOUL.md, voice 19/20 validated). It uses Patchright browser automation with anti-detection measures.
+sns-addict runs a single-tenant local dashboard for an Instagram persona. The owner connects Instagram in a headful local Chromium window, starts a live observer, reviews persona drafts, and only approved replies are sent. Autopilot-lite is optional and tightly limited to allowlisted 1:1 inbound DMs.
+
+## Product flow
+
+```text
+one command
+  -> dashboard opens
+  -> Connect Instagram opens local Chromium
+  -> owner logs in directly on instagram.com
+  -> Start Agent launches live observer in approval-first mode
+  -> allowlisted inbound DMs create drafts
+  -> owner approves/edits/rejects
+  -> Emergency Stop is always available
+```
+
+The dashboard never asks for or stores an Instagram password. Credentials/2FA are typed only into Instagram's own Chromium page.
 
 ## Install
 
 ```bash
 hermes plugins install cosmosjeon/sns-addict
-# OR (fallback)
-pip install git+https://github.com/cosmosjeon/sns-addict.git
+# OR fallback
+pip install -U "git+https://github.com/cosmosjeon/sns-addict.git"
 ```
 
-## Quick Start
+For local development:
 
 ```bash
-# 1. Setup (interactive — you'll log in to Instagram)
-hermes sns-addict setup
-
-# 2. Start dashboard
-hermes sns-addict dashboard
-# → Open http://localhost:8765
-
-# 3. Add a friend to allowlist via dashboard
-# 4. Click "Start" in dashboard
-# 5. Bot responds to DMs automatically
+cd /Users/slit/opensource/sns-addict
+pip install -e ".[dev]"
 ```
 
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for full setup details.
+## Quick start for non-developers
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Tier 1: Hermes Plugin Layer                            │
-│  register() → SnsAddictAdapter (BasePlatformAdapter)    │
-├─────────────────────────────────────────────────────────┤
-│  Tier 2: Browser Automation (Patchright)                │
-│  BrowserSession → DOM Observer → DM Actions             │
-├─────────────────────────────────────────────────────────┤
-│  Tier 3: Guardrails + Inbound Loop A                    │
-│  canary → quiet → loop → LLM → dedup → volume → send   │
-├─────────────────────────────────────────────────────────┤
-│  Tier 4: Dashboard + Persistence                        │
-│  FastAPI + WebSocket + state.json + allowlist.json      │
-└─────────────────────────────────────────────────────────┘
+```bash
+sns-addict start
+# or, when invoked through Hermes plugin routing:
+hermes sns-addict start
 ```
 
-### Key Components
+Then use the dashboard at `http://127.0.0.1:8765`:
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| Plugin entry | `sns_addict/__init__.py` | Hermes `register()` hook |
-| Browser session | `sns_addict/browser.py` | Patchright session + DOM observer |
-| Inbound loop | `sns_addict/loop.py` | Poll → guardrails → LLM → send |
-| Dashboard | `sns_addict/dashboard.py` | FastAPI + WebSocket server |
-| Guardrails | `sns_addict/guardrails.py` | 8 safety checks |
-| Persistence | `sns_addict/state.py` | state.json + allowlist.json |
+1. Click **Connect Instagram**.
+2. Log in inside the Chromium Instagram window. Do not enter credentials in the dashboard.
+3. Add a test friend/collaborator to **Allowlist**.
+4. Click **Start Agent**.
+5. Keep the default `approval` mode for the first test.
+6. Send a DM from the allowlisted test account.
+7. Confirm a draft appears in **Approval Queue**.
+8. Approve or reject it.
 
-## Persona
+Safe defaults:
 
-Powered by SOUL.md (5098 chars, voice 19/20 validated). The bot responds as deski.ai — a Korean persona with natural conversational style.
+- Initial local state is `stopped` until the owner starts the agent.
+- `Start Agent` uses `approval` mode, not autopilot.
+- Non-allowlisted inbound DMs are observe/log only: no draft, no send.
+- Ambiguous/group metadata fails closed.
+- `HALT_NOW` and Emergency Stop block sends.
 
-The persona file lives at `~/.hermes/SOUL.md` after setup. You can edit it to adjust tone, but keep the voice score above 15/20 or replies will feel off.
+## Runtime modes
 
-## Guardrails (8)
+| Mode | Behavior |
+| --- | --- |
+| `stopped` | No browser/send activity. Emergency stop state. |
+| `observe` | Observe/log only. No LLM draft and no send. |
+| `approval` | Allowlisted 1:1 inbound DMs can create drafts. Owner approval is required before send. |
+| `autopilot_lite` | Optional automatic replies only for allowlisted explicit 1:1 inbound DMs after guardrails pass. Never default. |
 
-1. **volume_cap** — 50/day total, 5/hr/friend, 20/day/friend
-2. **identity_canary** — detects "are you AI?" → replies "뭐래 ㅋㅋ" + halts
-3. **loop_detector** — 4 turns/60s → freeze thread
-4. **dedup** — 10-min window, no duplicate replies
-5. **quiet_hours** — 02:00-08:00 send blocked
-6. **halt_now** — `~/.hermes/HALT_NOW` file → immediate stop
-7. **cold_start_grace** — 5-min warmup (0min for testing)
-8. **fire-and-best-effort** — no retry on send failure
+## Emergency stop
 
-To trigger an emergency stop at any time:
+Dashboard **Emergency Stop** and CLI stop both touch:
+
+```bash
+~/.hermes/HALT_NOW
+```
+
+Manual stop:
 
 ```bash
 touch ~/.hermes/HALT_NOW
 ```
 
-Remove the file to resume:
+Resume requires explicit owner action: clear the halt and choose a mode/start again.
 
 ```bash
-rm ~/.hermes/HALT_NOW
+rm -f ~/.hermes/HALT_NOW
+sns-addict start
 ```
 
-## Dashboard
+## Architecture
 
-The dashboard runs at `http://localhost:8765` and shows:
-
-- Live DM feed (incoming + outgoing)
-- Allowlist management (add/remove friends)
-- Guardrail status (which checks fired today)
-- Volume counters (per-friend + global)
-- Start / Stop controls
-
-## Configuration
-
-After `hermes sns-addict setup`, your `~/.hermes/config.yaml` gains:
-
-```yaml
-sns_addict:
-  port: 8765
-  quiet_start: "02:00"
-  quiet_end: "08:00"
-  volume_day: 50
-  volume_hour_per_friend: 5
-  volume_day_per_friend: 20
-  cold_start_grace_seconds: 300
+```text
+Local dashboard / CLI
+  -> onboarding routes: Connect Instagram status/start
+  -> runtime supervisor: owns local adapter task
+  -> SnsAddictAdapter: Patchright browser + DOM observer
+  -> InboundLoop: mode + allowlist + guardrails + draft/send policy
+  -> StateStore / AllowlistStore / events.jsonl under ~/.hermes/sns-addict/
 ```
 
-Edit these values to tune behavior. Restart the bot after changes.
+Key files:
 
-## Cycle Roadmap
+| Component | File |
+| --- | --- |
+| CLI launcher | `sns_addict/cli.py` |
+| Local onboarding helpers | `sns_addict/onboarding.py` |
+| Dashboard onboarding API | `sns_addict/dashboard/routes/onboarding.py` |
+| Runtime supervisor | `sns_addict/runtime/supervisor.py` |
+| Dashboard UI | `sns_addict/dashboard/static/` |
+| Adapter/browser runtime | `sns_addict/adapter.py`, `sns_addict/browser/` |
+| Mode-aware inbound policy | `sns_addict/loops/inbound.py` |
+| State/allowlist/events | `sns_addict/persistence/` |
 
-- **C1 (this)**: Foundation — install + DM reply + dashboard + guardrails
-- **C2**: Realtime + mood scheduler + WebSocket detection
-- **C3**: Vision + long-run + group DMs
+## Guardrails
+
+Before any send-capable path:
+
+1. HALT/stopped check
+2. identity canary
+3. allowlist + explicit 1:1 metadata
+4. quiet hours
+5. loop detector
+6. dedup
+7. volume cap
+8. fire-and-best-effort send, no automatic retry
 
 ## Docs
 
-- [Installation Guide](docs/INSTALLATION.md)
+- [MVP Spec](docs/MVP-SPEC.md)
+- [Product Flow](docs/PRODUCT-FLOW.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Installation Guide](docs/INSTALLATION.md)
 - [Hermes Integration](docs/HERMES-INTEGRATION.md)
 - [Persona Guide](docs/PERSONA-GUIDE.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)

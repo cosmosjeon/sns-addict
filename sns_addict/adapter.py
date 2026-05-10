@@ -150,6 +150,10 @@ def _hash_thread(thread_id: str) -> str:
     return hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:16]
 
 
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTypeIssues, reportUntypedBaseClass]
     """Instagram DM bot adapter using Patchright browser automation.
 
@@ -163,8 +167,10 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self,
         config: PlatformConfig,
         platform: Optional[Platform] = None,
+        state_store: StateStore | None = None,
     ) -> None:
         super().__init__(config, platform if platform is not None else _resolve_platform())
+        self._state_store = state_store if state_store is not None else STATE_STORE
         self._session: Optional[BrowserSession] = None
         self._inbound_loop: Any = None
         self._halt_task: Optional[asyncio.Task[None]] = None
@@ -271,7 +277,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._auto_stop_task = asyncio.create_task(AutoStop(self).watch())
         self._sleep_recovery_task = asyncio.create_task(SleepRecovery(self).watch())
         self._approval_sender_task = asyncio.create_task(self._watch_approved_sends())
-        await STATE_STORE.update(_set_session_active)
+        await self._state_store.update(_set_session_active)
         self._mark_connected()
         logger.info("SnsAddictAdapter connected")
         return True
@@ -303,7 +309,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             except Exception as exc:
                 logger.debug("BrowserSession stop error (ignored): %s", exc)
             self._session = None
-        await STATE_STORE.update(_set_session_stopped)
+        await self._state_store.update(_set_session_stopped)
         logger.info("SnsAddictAdapter disconnected")
 
     async def _watch_approved_sends(self) -> None:
@@ -311,7 +317,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         while True:
             await asyncio.sleep(2)
             try:
-                state = await STATE_STORE.read()
+                state = await self._state_store.read()
                 if state.session_state != "active" or state.runtime_mode not in {
                     "approval",
                     "autopilot_lite",
@@ -333,7 +339,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                         ),
                     )
                     continue
-                state = await STATE_STORE.read()
+                state = await self._state_store.read()
                 if state.session_state != "active" or state.runtime_mode not in {
                     "approval",
                     "autopilot_lite",
@@ -360,7 +366,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                     break
             return state
 
-        await STATE_STORE.update(_claim)
+        await self._state_store.update(_claim)
         return claimed
 
     async def _restore_approved_send(self, proposal_id: str) -> None:
@@ -372,7 +378,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                     break
             return state
 
-        await STATE_STORE.update(_restore)
+        await self._state_store.update(_restore)
 
     async def _complete_approved_send(self, proposal_id: str, result: SendResult) -> None:
         async def _complete(state: State) -> State:
@@ -389,7 +395,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                     break
             return state
 
-        await STATE_STORE.update(_complete)
+        await self._state_store.update(_complete)
         await append_event(
             "approved_reply_sent" if result.success else "approved_reply_failed",
             proposal_id=proposal_id,
@@ -406,7 +412,9 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                         f"dom_{kind}",
                         thread_count=event.get("thread_count"),
                         thread_href=event.get("thread_href"),
-                        preview=event.get("preview", ""),
+                        preview_hash=_hash_text(str(event.get("preview") or ""))
+                        if event.get("preview")
+                        else None,
                     )
                 )
             asyncio.create_task(self._process_inbound(event))
@@ -573,7 +581,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             s.halt_reason = reason
             return s
 
-        await STATE_STORE.update(_apply)
+        await self._state_store.update(_apply)
         logger.warning("SnsAddictAdapter halted: %s", reason)
 
     async def _watch_state(self) -> None:
@@ -583,7 +591,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         already-``active`` state.json is honored without a 5 s delay.
         """
         try:
-            state = await STATE_STORE.read()
+            state = await self._state_store.read()
             if _should_connect(state) and not self.is_connected:
                 logger.info(
                     "state_transition",
@@ -601,14 +609,14 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         while True:
             await asyncio.sleep(5)
             try:
-                state_path = STATE_STORE._path  # noqa: SLF001
+                state_path = self._state_store._path  # noqa: SLF001
                 if not state_path.exists():
                     continue
                 mtime = state_path.stat().st_mtime
                 if mtime == last_mtime:
                     continue
                 last_mtime = mtime
-                state = await STATE_STORE.read()
+                state = await self._state_store.read()
                 if _should_connect(state) and not self.is_connected:
                     logger.info(
                         "state_transition",

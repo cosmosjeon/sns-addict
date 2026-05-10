@@ -164,6 +164,12 @@ class InboundLoop:
                     getattr(self._guardrails.canary, "CANONICAL_REPLY", "뭐래 ㅋㅋ")
                 )
                 if runtime_mode == "approval":
+                    if not await self._allowlisted_one_on_one(event):
+                        await append_event(
+                            "inbound_blocked_not_allowlisted",
+                            thread_id_hash=_hash_thread(thread_id),
+                        )
+                        return
                     await self._enqueue_proposal(event, canonical_reply, runtime_mode)
                     await append_event(
                         "identity_canary_proposed",
@@ -171,7 +177,6 @@ class InboundLoop:
                     )
                     return
                 if runtime_mode == "autopilot_lite" and not await self._autopilot_allowed(event):
-                    await self._enqueue_proposal(event, canonical_reply, runtime_mode)
                     await append_event(
                         "identity_canary_autopilot_blocked",
                         thread_id_hash=_hash_thread(thread_id),
@@ -180,11 +185,17 @@ class InboundLoop:
                 latest_mode = await self._runtime_mode()
                 if latest_mode != "autopilot_lite":
                     if latest_mode == "approval":
-                        await self._enqueue_proposal(event, canonical_reply, latest_mode)
-                        await append_event(
-                            "identity_canary_proposed",
-                            thread_id_hash=_hash_thread(thread_id),
-                        )
+                        if await self._allowlisted_one_on_one(event):
+                            await self._enqueue_proposal(event, canonical_reply, latest_mode)
+                            await append_event(
+                                "identity_canary_proposed",
+                                thread_id_hash=_hash_thread(thread_id),
+                            )
+                        else:
+                            await append_event(
+                                "inbound_blocked_not_allowlisted",
+                                thread_id_hash=_hash_thread(thread_id),
+                            )
                     else:
                         await append_event(
                             "inbound_ignored_runtime_mode",
@@ -199,15 +210,24 @@ class InboundLoop:
                 )
                 return
 
+            # Step 1.5 — allowlist gate before any draft or send.
+            if not await self._allowlisted_one_on_one(event):
+                await append_event(
+                    "inbound_blocked_not_allowlisted",
+                    thread_id_hash=_hash_thread(thread_id),
+                )
+                return
+
             # Step 2 — quiet hours
             if self._guardrails.quiet_hours.is_active():
                 logger.info("Quiet hours active — dropping event for %s", thread_id)
-                await append_event("queued_for_morning", thread_id=thread_id)
+                await append_event("queued_for_morning", thread_id_hash=_hash_thread(thread_id))
                 return
 
             # Step 3 — loop detector
             if self._guardrails.loop_detector.is_frozen(thread_id):
                 logger.info("Thread %s is frozen by loop detector — dropping", thread_id)
+                await append_event("guard_block", reason="loop_detector", thread_id_hash=_hash_thread(thread_id))
                 return
 
             # Step 4 — LLM (thinking pause + invoke)
@@ -222,13 +242,13 @@ class InboundLoop:
             # Step 5 — dedup
             if self._guardrails.dedup.is_duplicate(thread_id, reply):
                 logger.info("Dedup blocked reply for thread %s", thread_id)
-                await append_event("guard_block", reason="dedup", thread_id=thread_id)
+                await append_event("guard_block", reason="dedup", thread_id_hash=_hash_thread(thread_id))
                 return
 
             # Step 6 — volume cap
             if await self._guardrails.volume.exceeded(thread_id):
                 logger.info("Volume cap exceeded for thread %s", thread_id)
-                await append_event("guard_block", reason="volume_cap", thread_id=thread_id)
+                await append_event("guard_block", reason="volume_cap", thread_id_hash=_hash_thread(thread_id))
                 return
 
             # Step 7 — send or queue depending on the latest runtime mode.
@@ -242,12 +262,17 @@ class InboundLoop:
             if latest_mode == "autopilot_lite":
                 allowed = await self._autopilot_allowed(event)
                 if not allowed:
-                    await self._enqueue_proposal(event, reply, latest_mode)
                     return
                 latest_mode = await self._runtime_mode()
                 if latest_mode != "autopilot_lite":
                     if latest_mode == "approval":
-                        await self._enqueue_proposal(event, reply, latest_mode)
+                        if await self._allowlisted_one_on_one(event):
+                            await self._enqueue_proposal(event, reply, latest_mode)
+                        else:
+                            await append_event(
+                                "inbound_blocked_not_allowlisted",
+                                thread_id_hash=_hash_thread(thread_id),
+                            )
                     else:
                         await append_event(
                             "inbound_ignored_runtime_mode",
@@ -284,7 +309,7 @@ class InboundLoop:
             await append_event(
                 "guard_block",
                 reason="pipeline_error",
-                thread_id=thread_id,
+                thread_id_hash=_hash_thread(thread_id),
                 error=str(exc),
             )
 
@@ -295,6 +320,17 @@ class InboundLoop:
         return state.runtime_mode
 
     async def _autopilot_allowed(self, event: dict[str, Any]) -> bool:
+        return await self._allowlisted_one_on_one(
+            event,
+            event_name="autopilot_lite_blocked",
+        )
+
+    async def _allowlisted_one_on_one(
+        self,
+        event: dict[str, Any],
+        *,
+        event_name: str = "allowlist_blocked",
+    ) -> bool:
         thread_id = str(event.get("thread_id") or "")
         if not thread_id:
             return False
@@ -304,7 +340,7 @@ class InboundLoop:
         is_group = bool(event.get("is_group")) or chat_type in {"group", "group_dm"}
         if is_group or chat_type != "dm":
             await append_event(
-                "autopilot_lite_blocked",
+                event_name,
                 reason="not_one_on_one",
                 thread_id_hash=_hash_thread(thread_id),
             )
@@ -313,7 +349,7 @@ class InboundLoop:
         username = _event_username(event)
         if not username:
             await append_event(
-                "autopilot_lite_blocked",
+                event_name,
                 reason="missing_username",
                 thread_id_hash=_hash_thread(thread_id),
             )
@@ -323,7 +359,7 @@ class InboundLoop:
         usernames = {_normalize_username(friend.username) for friend in allowlist.friends}
         if _normalize_username(username) not in usernames:
             await append_event(
-                "autopilot_lite_blocked",
+                event_name,
                 reason="not_allowlisted",
                 thread_id_hash=_hash_thread(thread_id),
             )

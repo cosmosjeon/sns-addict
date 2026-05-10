@@ -5,9 +5,10 @@ This product is not a blind Instagram bot. The owner experience should feel like
 ## Target owner journey
 
 ```text
-Setup/login
-  -> Dashboard
-  -> Observe-only mode
+Setup/login/onboarding
+  -> One-command local launcher opens Dashboard
+  -> Dashboard Connect Instagram opens local Chromium login
+  -> Observe/approval-first live agent
   -> Approval queue
   -> Optional autopilot-lite for allowlisted friends only
   -> Emergency stop available throughout
@@ -36,9 +37,11 @@ Existing implementation:
 Product requirements:
 
 1. Setup must make clear this is **single-tenant local software**.
-2. Setup must default to a non-sending mode after login.
-3. Setup must create an empty allowlist; nothing is implicitly trusted.
-4. Setup must leave F3 plaintext capture off.
+2. `sns-addict start` should prepare local files, launch the localhost dashboard, and open the dashboard for non-developers.
+3. Dashboard **Connect Instagram** must open local Chromium; the owner types credentials directly on Instagram, never into sns-addict.
+4. Setup/start must default to a non-sending mode until the owner explicitly starts the agent.
+5. Setup/start must create an empty allowlist; nothing is implicitly trusted.
+6. Setup/start must leave F3 plaintext capture off.
 
 ## Step 2 — dashboard home
 
@@ -209,11 +212,11 @@ Rules:
 ## Happy path summary
 
 ```text
-1. Owner runs setup and logs in.
-2. Dashboard opens in stopped/observe state.
-3. Owner adds a collaborator to allowlist.
-4. Owner switches to observe and validates live events.
-5. Owner switches to approval mode.
+1. Owner runs `sns-addict start`; local files are prepared and dashboard opens.
+2. Owner clicks Connect Instagram and logs in directly inside local Chromium.
+3. Dashboard returns to stopped/observe-safe state until owner clicks Start Agent.
+4. Owner adds a collaborator to allowlist.
+5. Owner switches to observe or starts approval mode and validates live events.
 6. Inbound DM creates a draft queue item.
 7. Owner approves or edits the draft.
 8. Adapter sends once, best-effort, with no retry.

@@ -2,114 +2,145 @@
 
 ## Prerequisites
 
-- **Hermes** ≥ 0.12.0 (or `pip install git+...` fallback)
+- **Hermes** ≥ 0.12.0, or standalone `pip install` fallback
 - **Python** ≥ 3.10
-- **macOS** (Linux untested)
-- **2 GB free disk** (Chromium download ~211 MB)
-- Instagram account (deski.ai)
+- **macOS** recommended; Linux is untested
+- **2 GB free disk** for bundled Chromium
+- Instagram account you control
 
-Check your Python version:
+sns-addict is a **local supervised persona**, not a growth/spam bot. The dashboard never asks for an Instagram password; login happens only inside a local Chromium window on `instagram.com`.
 
-```bash
-python3 --version
-# Should print Python 3.10.x or higher
-```
+## Install
 
-Check Hermes version:
-
-```bash
-hermes --version
-# Should print 0.12.0 or higher
-```
-
-## Method 1: Hermes Plugin (Recommended)
+### Method 1: Hermes Plugin
 
 ```bash
 hermes plugins install cosmosjeon/sns-addict
 ```
 
-Hermes downloads the plugin, installs Python dependencies, and registers the `sns-addict` subcommand. No manual pip steps needed.
+Hermes installs dependencies and registers the `sns-addict` subcommand.
 
-## Method 2: pip (Fallback)
-
-If you don't have Hermes or prefer a standalone install:
+### Method 2: pip fallback
 
 ```bash
-pip install git+https://github.com/cosmosjeon/sns-addict.git
+pip install -U "git+https://github.com/cosmosjeon/sns-addict.git"
 ```
 
-After pip install, the `sns-addict` CLI is available directly (without the `hermes` prefix).
+After pip install, the `sns-addict` CLI is available directly.
 
-## Setup
+## Non-developer quick start
 
-Run the interactive setup (you'll log in to Instagram):
+Run one command:
 
 ```bash
-hermes sns-addict setup
+sns-addict start
+# or through Hermes plugin routing:
+hermes sns-addict start
 ```
 
 This will:
-1. Install Patchright + download bundled Chromium (~211 MB)
-2. Open a browser window — log in to your Instagram account
-3. When "Save login info?" appears, click **예** (Yes)
-4. Install SOUL.md persona to `~/.hermes/SOUL.md`
-5. Update `~/.hermes/config.yaml` with sns_addict block
 
-The setup takes about 3-5 minutes on a fast connection (mostly Chromium download).
+1. Prepare local files under `~/.hermes/sns-addict/`.
+2. Copy `SOUL.md` to `~/.hermes/SOUL.md` if missing.
+3. Start the local dashboard at `http://127.0.0.1:8765`.
+4. Open the dashboard in your browser unless `--no-open` is passed.
+5. Keep the agent **stopped** until you explicitly click **Start Agent**.
 
-## Dashboard
+From the dashboard:
 
-Start the dashboard server:
+1. Click **Connect Instagram**.
+2. Log in directly inside the Chromium Instagram window.
+3. Add a test friend/collaborator to the allowlist.
+4. Click **Start Agent**. This starts in `approval` mode.
+5. Send a test DM from the allowlisted account.
+6. Approve or reject the proposed reply.
+
+## Safe defaults
+
+- Initial state is `stopped`.
+- Start Agent uses `approval`, not `autopilot_lite`.
+- Non-allowlisted inbound DMs do not produce drafts or sends.
+- Group/ambiguous metadata fails closed.
+- Emergency Stop touches `~/.hermes/HALT_NOW`.
+
+## Fallback setup command
+
+The older setup command remains available for explicit terminal-driven setup:
 
 ```bash
+hermes sns-addict setup
+# or
+sns-addict setup
+```
+
+Use this only if the dashboard-led Connect Instagram flow is not sufficient.
+
+## Dashboard command only
+
+If local files are already prepared and you only want the dashboard server:
+
+```bash
+sns-addict dashboard
+# or
 hermes sns-addict dashboard
 ```
 
-Open http://localhost:8765 in your browser.
+Open:
 
-From the dashboard you can:
-- Add friends to the allowlist
-- View live DM activity
-- Check guardrail status
-- Start and stop the bot
-
-To use a different port:
-
-```bash
-hermes sns-addict dashboard --port 8766
+```text
+http://127.0.0.1:8765
 ```
 
-## Owner UX Tips
+Different port:
 
-- Move the headful Chromium window to a separate macOS Space
-- Do NOT click inside the Chromium window while the bot is running
-- Keep the Instagram tab **foregrounded** (MutationObserver throttles in background)
-- Run `caffeinate -d &` during 1-hour live tests to prevent sleep
+```bash
+sns-addict start --port 8766
+sns-addict dashboard --port 8766
+```
 
 ## Emergency Stop
 
-Create the halt file to stop the bot immediately:
+Dashboard **Emergency Stop** and CLI stop both create:
+
+```bash
+~/.hermes/HALT_NOW
+```
+
+Manual stop:
 
 ```bash
 touch ~/.hermes/HALT_NOW
 ```
 
-Remove it to resume:
+Resume requires explicit owner action:
 
 ```bash
-rm ~/.hermes/HALT_NOW
+rm -f ~/.hermes/HALT_NOW
+sns-addict start
 ```
+
+Then choose mode/start in the dashboard.
+
+## Owner UX tips
+
+- Test with a secondary Instagram account first.
+- Keep Chromium visible while testing; background tabs may throttle observers.
+- Use `approval` mode until you trust the persona and DOM detection.
+- Enable `autopilot_lite` only for allowlisted 1:1 test accounts.
+- Run `caffeinate -d` during long local tests to prevent sleep.
 
 ## Troubleshooting
 
-**challenge_required redirect**: Instagram detected automation. Stop immediately, wait 24h, try again with a fresh profile.
+**Port conflict**: change port with `sns-addict start --port 8766`.
 
-**Port conflict**: Change port with `hermes sns-addict dashboard --port 8766`
+**2FA prompt**: complete 2FA manually in the Chromium Instagram window.
 
-**2FA prompt**: Complete 2FA manually in the browser window during setup.
+**Login not detected**: wait for Instagram DM inbox to load, then refresh the dashboard status. If needed, click Connect Instagram again.
 
-**Login timeout**: You have 5 minutes to complete login. Re-run `hermes sns-addict setup` if it times out.
+**Chromium won't launch**: ensure 2 GB free disk and install Patchright browser dependencies.
 
-**Chromium won't launch**: Make sure you have at least 2 GB free disk space. Run `df -h ~` to check.
+**Agent not drafting**: confirm runtime mode is `approval`, the sender is in allowlist, and live events show the observer is connected.
 
-**Bot not responding to DMs**: Confirm the Instagram tab is foregrounded in the Chromium window. Background tabs throttle MutationObserver events.
+**Agent sends nothing in observe mode**: expected. `observe` never drafts or sends.
+
+**Emergency stop remains active**: remove `~/.hermes/HALT_NOW`, then click Start Agent again.

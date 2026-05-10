@@ -36,6 +36,49 @@
   <main class="content">
 
     <section id="tab-home" class="tab-content active" role="tabpanel">
+      <article class="card card-onboarding">
+        <header class="card-head">
+          <div>
+            <h2>Onboarding</h2>
+            <p class="muted small onboarding-subtitle">
+              Local-only flow: connect Instagram in Chromium, then start the supervised agent.
+            </p>
+          </div>
+          <span id="login-pill" class="pill pill-idle">checking</span>
+        </header>
+        <div class="onboarding-steps">
+          <div class="onboarding-step">
+            <span class="step-num">1</span>
+            <div class="step-body">
+              <strong>Connect Instagram</strong>
+              <p class="muted small">
+                Opens local Chromium. Type credentials only in Instagram — this dashboard never asks for a password.
+              </p>
+              <button type="button" id="btn-connect-instagram" class="btn btn-primary" onclick="connectInstagram()">
+                Connect Instagram
+              </button>
+            </div>
+          </div>
+          <div class="onboarding-step">
+            <span class="step-num">2</span>
+            <div class="step-body">
+              <strong>Start Agent</strong>
+              <p class="muted small">
+                Starts the live observer in approval-first mode. Allowlisted inbound DMs can create drafts; only approved sends happen.
+              </p>
+              <button type="button" class="btn btn-ghost" onclick="startSession()">Start Agent</button>
+            </div>
+          </div>
+        </div>
+        <dl class="kv kv-wide">
+          <dt>instagram</dt><dd id="kv-login-state">—</dd>
+          <dt>profile</dt><dd id="kv-login-profile">—</dd>
+          <dt>runtime</dt><dd id="kv-runtime-health">—</dd>
+          <dt>llm</dt><dd id="kv-llm-health">—</dd>
+        </dl>
+        <p id="login-error" class="banner banner-danger hidden" role="alert"></p>
+      </article>
+
       <div class="grid-2">
         <article class="card card-status">
           <header class="card-head">
@@ -51,10 +94,10 @@
           </dl>
           <div class="controls">
             <button type="button" id="btn-start" class="btn btn-primary" onclick="startSession()">
-              <span class="btn-glyph">▶</span> Start
+              <span class="btn-glyph">▶</span> Start Agent
             </button>
             <button type="button" id="btn-stop" class="btn btn-ghost" onclick="stopSession()">
-              <span class="btn-glyph">■</span> Stop
+              <span class="btn-glyph">■</span> Emergency Stop
             </button>
             <button type="button" id="btn-refresh" class="btn btn-link" onclick="loadStatus()" title="Refresh status">↻</button>
           </div>

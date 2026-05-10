@@ -9,6 +9,7 @@ const state = {
   ws: null,
   wsRetry: 0,
   pollTimer: null,
+  loginPollTimer: null,
   events: 0,
   startedAt: null,
 };
@@ -73,11 +74,13 @@ async function loadStatus() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     renderStatus(data);
+    renderRuntimeHealth(data.runtime_health || null);
     hideGatewayBanner();
     return data;
   } catch (err) {
     showGatewayBanner();
     renderStatus(null);
+    renderRuntimeHealth(null);
     console.warn("status fetch failed:", err);
     return null;
   }
@@ -122,6 +125,81 @@ function renderStatus(data) {
   if (data.since && !state.startedAt) state.startedAt = data.since;
   $("#stat-uptime").textContent = (s === "active") ? fmtDuration(state.startedAt || data.since) : "—";
   $("#stats-stamp").textContent = fmtTime(Date.now() / 1000);
+}
+
+function renderRuntimeHealth(health) {
+  const runtimeEl = $("#kv-runtime-health");
+  const llmEl = $("#kv-llm-health");
+  if (!runtimeEl || !llmEl) return;
+  if (!health) {
+    runtimeEl.textContent = "offline";
+    llmEl.textContent = "unknown";
+    return;
+  }
+  const connected = health.browser_connected ? "browser connected" : "browser not connected";
+  runtimeEl.textContent = `${health.status || "unknown"} · ${connected}`;
+  llmEl.textContent = health.llm_available ? "available" : "drafts may fail";
+  if (health.warning) {
+    llmEl.textContent = `${llmEl.textContent} · ${health.warning}`;
+  }
+}
+
+async function loadInstagramStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/api/onboarding/instagram/status`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderInstagramStatus(data);
+    return data;
+  } catch (err) {
+    renderInstagramStatus({ state: "error", error: err.message });
+    return null;
+  }
+}
+
+function renderInstagramStatus(data) {
+  const pill = $("#login-pill");
+  const stateEl = $("#kv-login-state");
+  const profileEl = $("#kv-login-profile");
+  const errEl = $("#login-error");
+  const btn = $("#btn-connect-instagram");
+  if (!pill || !stateEl || !profileEl || !errEl || !btn) return;
+
+  const loginState = data?.state || "unknown";
+  pill.textContent = loginState;
+  pill.className = "pill " + (
+    loginState === "connected" ? "pill-active"
+      : (loginState === "error" ? "pill-stopped" : "pill-idle")
+  );
+  stateEl.textContent = loginState;
+  profileEl.textContent = data?.profile_dir_exists
+    ? (data.cookies_present ? "profile + saved cookies" : "profile ready; login needed")
+    : "profile not created";
+  btn.disabled = loginState === "connecting";
+  btn.textContent = loginState === "connecting" ? "Chromium login running…" : "Connect Instagram";
+  if (loginState === "error" && data?.error) {
+    errEl.textContent = data.error;
+    errEl.classList.remove("hidden");
+  } else {
+    errEl.textContent = "";
+    errEl.classList.add("hidden");
+  }
+}
+
+async function connectInstagram() {
+  const btn = $("#btn-connect-instagram");
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${API_BASE}/api/onboarding/instagram/connect`, { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderInstagramStatus(data);
+    scheduleLoginPolling();
+  } catch (err) {
+    flashError(`Instagram 연결 실패: ${err.message}`);
+  } finally {
+    await loadInstagramStatus();
+  }
 }
 
 async function setRuntimeMode(mode) {
@@ -183,9 +261,14 @@ function schedulePolling() {
   }, POLL_MS);
 }
 
+function scheduleLoginPolling() {
+  if (state.loginPollTimer) clearInterval(state.loginPollTimer);
+  state.loginPollTimer = setInterval(loadInstagramStatus, 2000);
+}
+
 function showGatewayBanner() {
   const b = $("#status-banner");
-  b.innerHTML = "Hermes gateway 안 돔 — <code>hermes start</code> 먼저 실행";
+  b.textContent = "Dashboard API is not reachable. Restart `sns-addict start`.";
   b.classList.remove("hidden");
 }
 
@@ -549,10 +632,12 @@ async function init() {
   initTabs();
   initF3Controls();
   await loadStatus();
+  await loadInstagramStatus();
   await loadAllowlist();
   await loadApprovalQueue();
   ensureWebSocket();
   schedulePolling();
+  scheduleLoginPolling();
 
   setInterval(() => {
     if (state.startedAt) {
@@ -565,6 +650,7 @@ document.addEventListener("DOMContentLoaded", init);
 
 window.startSession  = startSession;
 window.stopSession   = stopSession;
+window.connectInstagram = connectInstagram;
 window.loadStatus    = loadStatus;
 window.setRuntimeMode = setRuntimeMode;
 window.addFriend     = addFriend;

@@ -14,6 +14,8 @@ import importlib
 import json
 import logging
 import sys
+import threading
+import webbrowser
 from pathlib import Path
 from collections.abc import Callable, Coroutine
 from typing import cast
@@ -57,6 +59,50 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_start(args: argparse.Namespace) -> int:
+    """One-command non-developer launcher: storage + dashboard + browser."""
+    try:
+        import uvicorn  # noqa: PLC0415
+        from sns_addict.dashboard.server import app  # noqa: PLC0415
+        from sns_addict.onboarding import ensure_local_product_files  # noqa: PLC0415
+
+        paths = ensure_local_product_files()
+        host = cast(str, getattr(args, "host", "127.0.0.1"))
+        port = cast(int, getattr(args, "port", 8765))
+        open_browser = not cast(bool, getattr(args, "no_open", False))
+        url = f"http://{host}:{port}/"
+
+        print("sns-addict local launcher ready")
+        print(f"  Storage: {paths['sns_dir']}")
+        print(f"  Dashboard: {url}")
+        print("  Instagram login: use Connect Instagram in the dashboard.")
+        print("  Safe default: stopped until you press Start Agent.")
+
+        if open_browser:
+            _open_browser_soon(url)
+
+        _ = uvicorn.run(app, host=host, port=port)
+        return 0
+    except KeyboardInterrupt:
+        print("\nDashboard stopped.")
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"Launcher failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def _open_browser_soon(url: str, delay: float = 0.8) -> None:
+    def _open() -> None:
+        try:
+            webbrowser.open(url)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("browser open failed: %s", exc)
+
+    timer = threading.Timer(delay, _open)
+    timer.daemon = True
+    timer.start()
+
+
 def _cmd_status(_args: argparse.Namespace) -> int:
     """Print current session state."""
     if not _STATE_PATH.exists():
@@ -94,11 +140,12 @@ def _cmd_stop(_args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> None:
-    """Entry point for the sns-addict CLI."""
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sns-addict",
-        description="sns-addict: Korean SNS persona Instagram bot via browser automation",
+        description=(
+            "sns-addict: local supervised Instagram persona via browser automation"
+        ),
     )
     _log_level_action = parser.add_argument(
         "--log-level",
@@ -109,6 +156,30 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
     subparsers.required = True
+
+    # start
+    start_parser = subparsers.add_parser(
+        "start",
+        help="One-command local launcher: prepare storage, start dashboard, open browser",
+    )
+    _start_host_action = start_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind (default: 127.0.0.1 — local only)",
+    )
+    _start_port_action = start_parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port to listen on (default: 8765)",
+    )
+    _start_no_open_action = start_parser.add_argument(
+        "--no-open",
+        dest="no_open",
+        action="store_true",
+        help="Do not open the dashboard in the default browser",
+    )
+    _start_action = start_parser.set_defaults(func=_cmd_start)
 
     # setup
     setup_parser = subparsers.add_parser("setup", help="Install and configure sns-addict")
@@ -137,6 +208,13 @@ def main() -> None:
     stop_parser = subparsers.add_parser("stop", help="Send stop signal to running adapter")
     _stop_action = stop_parser.set_defaults(func=_cmd_stop)
 
+    return parser
+
+
+def main() -> None:
+    """Entry point for the sns-addict CLI."""
+    parser = _build_parser()
+
     args = parser.parse_args()
 
     log_level = cast(str, args.log_level)
@@ -154,3 +232,7 @@ def main() -> None:
 
     func = cast(Callable[[argparse.Namespace], int], args.func)
     sys.exit(func(args))
+
+
+if __name__ == "__main__":
+    main()
