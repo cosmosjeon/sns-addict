@@ -244,3 +244,55 @@ def test_inbox_thread_key_prefers_direct_href_when_present() -> None:
     row = {"href": "https://www.instagram.com/direct/t/abc123/", "text": "friend"}
 
     assert _inbox_thread_key(5, row) == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_thread_poll_baselines_then_dispatches_changed_latest_inbound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sns_addict import adapter as adapter_mod
+
+    adapter = adapter_mod.SnsAddictAdapter(adapter_mod.PlatformConfig())
+    page = MagicMock()
+    adapter._session = MagicMock(page=page)
+    inbound_loop = MagicMock()
+    inbound_loop.on_inbound = AsyncMock(return_value=None)
+    adapter.set_inbound_loop(inbound_loop)
+
+    class FakeDMA:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def read_thread(self, thread_id: str, limit: int = 5):
+            del thread_id, limit
+            self.calls += 1
+            text = "old inbound" if self.calls == 1 else "new inbound"
+            return [{"text": text, "is_self": False}]
+
+    monkeypatch.setattr(
+        adapter_mod,
+        "_read_thread_metadata",
+        AsyncMock(return_value={"chat_type": "dm", "username": "friend", "is_group": False}),
+    )
+    monkeypatch.setattr(adapter_mod, "append_event", AsyncMock(return_value=None))
+
+    dma = FakeDMA()
+
+    assert await adapter._dispatch_thread_if_new_inbound(dma, "thread-1", source="test") is False
+    inbound_loop.on_inbound.assert_not_awaited()
+
+    assert await adapter._dispatch_thread_if_new_inbound(dma, "thread-1", source="test") is True
+    inbound_loop.on_inbound.assert_awaited_once()
+    event = inbound_loop.on_inbound.await_args.args[0]
+    assert event["thread_id"] == "thread-1"
+    assert event["text"] == "new inbound"
+    assert event["chat_type"] == "dm"
+    assert event["username"] == "friend"
+
+
+def test_thread_id_from_href_handles_absolute_relative_and_query() -> None:
+    from sns_addict.adapter import _thread_id_from_href
+
+    assert _thread_id_from_href("https://www.instagram.com/direct/t/abc123/?x=1") == "abc123"
+    assert _thread_id_from_href("/direct/t/xyz789/") == "xyz789"
+    assert _thread_id_from_href("https://www.instagram.com/direct/inbox/") == ""

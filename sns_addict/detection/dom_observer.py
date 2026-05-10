@@ -86,7 +86,7 @@ _OBSERVER_SCRIPT = """
             }
             return;
         }
-        let threads = document.querySelectorAll('a[href^="/direct/t/"]');
+        let threads = document.querySelectorAll('a[href*="/direct/t/"]');
         if (threads.length === 0) {
             threads = document.querySelectorAll('[role="listitem"]');
         }
@@ -144,7 +144,7 @@ _OBSERVER_SCRIPT = """
     // Initial baseline + polling
     setTimeout(() => {
         try {
-            const threads = document.querySelectorAll('a[href^="/direct/t/"]');
+            const threads = document.querySelectorAll('a[href*="/direct/t/"]');
             window.__sns_dom_event({
                 kind: 'observer_alive',
                 thread_count: threads.length,

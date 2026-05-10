@@ -183,6 +183,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._auto_stop_task: Optional[asyncio.Task[None]] = None
         self._sleep_recovery_task: Optional[asyncio.Task[None]] = None
         self._inbox_snapshot: dict[str, str] = {}
+        self._thread_last_inbound_snapshot: dict[str, str] = {}
         self._browser_action_lock = asyncio.Lock()
 
     def set_inbound_loop(self, inbound_loop: Any) -> None:
@@ -378,6 +379,9 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                     next_snapshot[thread_key] = signature
                     if not self._inbox_snapshot:
                         continue
+                    # Row-level signals are still useful when Instagram exposes
+                    # unread/text changes. A separate top-thread scan below handles
+                    # static rows by actually reading recent thread contents.
                     if bool(thread.get("unread")) or (prev is not None and prev != signature):
                         changed += 1
                         await append_event(
@@ -405,14 +409,58 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                                     href.split("/direct/t/")[-1].rstrip("/")
                                 ),
                             )
-                        await self._process_inbound(
-                            {
-                                "kind": "inbox_poll_inbound_likely",
-                                "thread_href": href,
-                                "preview": row_text,
-                                "ts": time.time(),
-                            }
-                        )
+                        thread_id = _thread_id_from_href(href)
+                        if not thread_id:
+                            continue
+                        async with self._browser_action_lock:
+                            await self._dispatch_thread_if_new_inbound(
+                                dma,
+                                thread_id,
+                                source="inbox_poll",
+                            )
+
+                        # Return the browser to the inbox so subsequent polls keep
+                        # watching the list instead of staying inside one thread.
+                        try:
+                            async with self._browser_action_lock:
+                                await self._session.page.goto(  # type: ignore[union-attr]
+                                    "https://www.instagram.com/direct/inbox/",
+                                    wait_until="domcontentloaded",
+                                    timeout=30000,
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            await append_event(
+                                "inbox_poll_return_to_inbox_failed",
+                                error=str(exc)[:200],
+                            )
+                if next_snapshot:
+                    # Do not let the active top-thread scan starve newly-opened
+                    # conversations just because row text is static. The helper
+                    # baselines the latest inbound message first, then dispatches
+                    # only when it changes.
+                    for row_index, thread in enumerate(threads[:3]):
+                        href = str(thread.get("href") or "")
+                        thread_id = _thread_id_from_href(href)
+                        if not thread_id:
+                            continue
+                        async with self._browser_action_lock:
+                            await self._dispatch_thread_if_new_inbound(
+                                dma,
+                                thread_id,
+                                source="top_thread_poll",
+                            )
+                        try:
+                            async with self._browser_action_lock:
+                                await self._session.page.goto(  # type: ignore[union-attr]
+                                    "https://www.instagram.com/direct/inbox/",
+                                    wait_until="domcontentloaded",
+                                    timeout=30000,
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            await append_event(
+                                "inbox_poll_return_to_inbox_failed",
+                                error=str(exc)[:200],
+                            )
                 self._inbox_snapshot = next_snapshot
                 await append_event(
                     "inbox_poll_heartbeat",
@@ -427,6 +475,84 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                     await append_event("inbox_poll_error", error=str(exc)[:200])
                 except Exception:
                     pass
+
+    async def _dispatch_thread_if_new_inbound(
+        self,
+        dma: Any,
+        thread_id: str,
+        *,
+        source: str,
+    ) -> bool:
+        """Read one thread and dispatch only when its latest inbound changes.
+
+        Row-level inbox signals are unreliable on Instagram. This helper is the
+        actual DM-read gate used by polling: it opens/reads a thread, records the
+        latest non-self message signature as a baseline, and only calls
+        ``InboundLoop`` when that signature changes after the baseline.
+        """
+        if self._inbound_loop is None or self._session is None or self._session.page is None:
+            return False
+        try:
+            messages = await dma.read_thread(thread_id, limit=5)
+            metadata = await _read_thread_metadata(self._session.page)
+        except Exception as exc:  # noqa: BLE001
+            await append_event(
+                "thread_poll_read_failed",
+                source=source,
+                thread_id_hash=_hash_thread(thread_id),
+                error=str(exc)[:200],
+            )
+            return False
+        if not messages:
+            await append_event(
+                "thread_poll_empty",
+                source=source,
+                thread_id_hash=_hash_thread(thread_id),
+            )
+            return False
+        last = messages[-1]
+        if last.get("is_self"):
+            self._thread_last_inbound_snapshot.pop(thread_id, None)
+            await append_event(
+                "thread_poll_latest_self",
+                source=source,
+                thread_id_hash=_hash_thread(thread_id),
+            )
+            return False
+        text = str(last.get("text") or "")
+        if not text:
+            return False
+        signature = _hash_text(text)
+        previous = self._thread_last_inbound_snapshot.get(thread_id)
+        self._thread_last_inbound_snapshot[thread_id] = signature
+        if previous is None:
+            await append_event(
+                "thread_poll_baselined",
+                source=source,
+                thread_id_hash=_hash_thread(thread_id),
+            )
+            return False
+        if previous == signature:
+            return False
+
+        await append_event(
+            "thread_poll_new_inbound",
+            source=source,
+            thread_id_hash=_hash_thread(thread_id),
+            text_hash=signature,
+        )
+        await self._inbound_loop.on_inbound(
+            {
+                "thread_id": thread_id,
+                "text": text,
+                "ts": time.time(),
+                "message_id": hashlib.sha256(
+                    f"{thread_id}{text}".encode("utf-8")
+                ).hexdigest()[:16],
+                **metadata,
+            }
+        )
+        return True
 
     async def _claim_approved_send(self) -> dict[str, Any] | None:
         claimed: dict[str, Any] | None = None
@@ -747,11 +873,21 @@ def _record_send_counter(state: State, thread_id: str) -> None:
     c.per_friend_hour[thread_id] = hour_list
 
 
+def _thread_id_from_href(href: str) -> str:
+    """Extract an Instagram direct thread id from absolute or relative href."""
+    if "/direct/t/" not in href:
+        return ""
+    tail = href.split("/direct/t/", 1)[-1]
+    tail = tail.split("?", 1)[0].split("#", 1)[0]
+    return tail.strip("/")
+
+
 def _inbox_thread_key(row_index: int, thread: dict[str, Any]) -> str:
     """Return a stable key for one inbox row across preview text changes."""
     href = str(thread.get("href") or "")
-    if href and "/direct/t/" in href:
-        return href.split("/direct/t/")[-1].rstrip("/")
+    thread_id = _thread_id_from_href(href)
+    if thread_id:
+        return thread_id
     title = str(thread.get("title") or "").strip()
     if not title:
         row_text = str(thread.get("text") or "").strip()

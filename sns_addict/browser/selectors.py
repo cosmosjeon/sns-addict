@@ -37,7 +37,7 @@ SELECTORS: dict[str, list[str]] = {
     ],
     "dm_thread_item": [
         'div[role="listbox"] div[role="button"]',
-        'a[href^="/direct/t/"]',
+        'a[href*="/direct/t/"]',
     ],
     "dm_message_input": [
         'div[role="textbox"]',
