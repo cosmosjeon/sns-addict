@@ -10,7 +10,7 @@ C1 is the safety-first MVP. It proves that the current codebase can become a con
 
 ### In scope
 
-- Local install/setup/login through existing CLI/setup flow.
+- Local install/setup/login through the one-command dashboard-led flow (`sns-addict start`) while keeping existing CLI/setup as fallback.
 - Local dashboard as the owner control plane.
 - Explicit product modes: `stopped`, `observe`, `approval`, `autopilot_lite`.
 - Observe-only default after setup/login.
@@ -131,7 +131,9 @@ C1 dashboard surfaces:
 
 ### Setup/login
 
-- `sns-addict setup` or `hermes sns-addict setup` completes without changing runtime code.
+- `sns-addict start` opens the localhost dashboard and prepares local storage without requiring terminal-driven login.
+- Dashboard Connect Instagram opens local Chromium; credentials are typed only into Instagram.
+- `sns-addict setup` or `hermes sns-addict setup` remains a fallback and completes without changing runtime code.
 - Storage exists at `~/.hermes/sns-addict/`.
 - Empty allowlist is created if absent.
 - F3 is off.

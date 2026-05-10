@@ -6,10 +6,36 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock
-from typing import cast
 
 from fastapi.testclient import TestClient
+
+
+class FakeRuntimeSupervisor:
+    def health(self) -> dict[str, Any]:
+        return {
+            "status": "stopped",
+            "runtime_task_active": False,
+            "browser_connected": False,
+            "llm_available": False,
+            "warning": "test",
+        }
+
+    async def start(self, mode: str = "approval") -> dict[str, Any]:
+        return {**self.health(), "status": "running", "mode": mode}
+
+    async def stop(self, *, touch_halt: bool = True) -> dict[str, Any]:
+        _ = touch_halt
+        return self.health()
+
+
+def install_fake_runtime(monkeypatch) -> FakeRuntimeSupervisor:
+    from sns_addict.dashboard.routes import control as control_mod
+
+    fake = FakeRuntimeSupervisor()
+    monkeypatch.setattr(control_mod, "_runtime_supervisor", lambda: fake)
+    return fake
 
 
 def test_allowlist_list_create_delete_round_trip(tmp_path: Path, monkeypatch) -> None:
@@ -50,6 +76,7 @@ def test_control_status_returns_state(tmp_path: Path, monkeypatch) -> None:
     from sns_addict.dashboard.routes import control as control_mod
     from sns_addict.persistence.state import State, StateStore
 
+    install_fake_runtime(monkeypatch)
     store = StateStore(tmp_path / "state.json")
     asyncio.run(store.write(State(session_state="paused", current_mood="calm", mood_started_at=1.0)))
     monkeypatch.setattr(control_mod, "_store", store)
@@ -58,6 +85,7 @@ def test_control_status_returns_state(tmp_path: Path, monkeypatch) -> None:
     response = client.get("/api/control/status")
     assert response.status_code == 200
     assert response.json()["session_state"] == "paused"
+    assert response.json()["runtime_health"]["status"] == "stopped"
 
 
 def test_control_start_changes_state(tmp_path: Path, monkeypatch) -> None:
@@ -65,6 +93,7 @@ def test_control_start_changes_state(tmp_path: Path, monkeypatch) -> None:
     from sns_addict.dashboard.routes import control as control_mod
     from sns_addict.persistence.state import State, StateStore
 
+    install_fake_runtime(monkeypatch)
     store = StateStore(tmp_path / "state.json")
     asyncio.run(store.write(State(session_state="stopped")))
     monkeypatch.setattr(control_mod, "_store", store)
@@ -79,6 +108,7 @@ def test_control_start_changes_state(tmp_path: Path, monkeypatch) -> None:
     assert response.json()["ok"] is True
     assert response.json()["session_state"] == "active"
     assert response.json()["runtime_mode"] == "approval"
+    assert response.json()["runtime_health"]["status"] == "running"
     saved = asyncio.run(store.read())
     assert saved.session_state == "active"
     assert saved.runtime_mode == "approval"
@@ -90,6 +120,7 @@ def test_control_mode_changes_state(tmp_path: Path, monkeypatch) -> None:
     from sns_addict.dashboard.routes import control as control_mod
     from sns_addict.persistence.state import State, StateStore
 
+    install_fake_runtime(monkeypatch)
     store = StateStore(tmp_path / "state.json")
     asyncio.run(store.write(State(session_state="stopped", runtime_mode="stopped")))
     monkeypatch.setattr(control_mod, "_store", store)
@@ -163,3 +194,27 @@ def test_control_approval_queue_approve_reject(tmp_path: Path, monkeypatch) -> N
     state = asyncio.run(store.read())
     statuses = {item["id"]: item["status"] for item in state.pending_sends}
     assert statuses == {"p1": "approved", "p2": "rejected"}
+
+
+def test_onboarding_instagram_status_and_connect(monkeypatch) -> None:
+    from sns_addict.dashboard.server import app
+    from sns_addict.dashboard.routes import onboarding as onboarding_mod
+
+    class FakeLoginSupervisor:
+        def status(self) -> dict[str, Any]:
+            return {"state": "login_needed", "cookies_present": False}
+
+        async def connect(self) -> dict[str, Any]:
+            return {"state": "connecting", "cookies_present": False}
+
+    monkeypatch.setattr(onboarding_mod, "ensure_local_product_files", lambda: {})
+    monkeypatch.setattr(onboarding_mod, "_login_supervisor", FakeLoginSupervisor())
+    client = TestClient(app)
+
+    response = client.get("/api/onboarding/instagram/status")
+    assert response.status_code == 200
+    assert response.json()["state"] == "login_needed"
+
+    response = client.post("/api/onboarding/instagram/connect")
+    assert response.status_code == 200
+    assert response.json()["state"] == "connecting"

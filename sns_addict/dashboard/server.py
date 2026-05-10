@@ -10,7 +10,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from sns_addict.dashboard.routes import allowlist, control, monitoring, persona, alerts, conversations
+from sns_addict.dashboard.routes import (
+    alerts,
+    allowlist,
+    control,
+    conversations,
+    monitoring,
+    onboarding,
+    persona,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +39,7 @@ app.include_router(monitoring.router, prefix="/api/monitoring")
 app.include_router(persona.router, prefix="/api/persona")
 app.include_router(alerts.router, prefix="/api/alerts")
 app.include_router(conversations.router, prefix="/api/conversations")
+app.include_router(onboarding.router, prefix="/api/onboarding")
 
 # WebSocket events endpoint
 _EVENTS_PATH = Path.home() / ".hermes" / "sns-addict" / "logs" / "events.jsonl"
