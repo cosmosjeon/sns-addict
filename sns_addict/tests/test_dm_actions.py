@@ -119,3 +119,30 @@ async def test_list_inbox_threads_returns_unread_marker():
 
     assert threads[0]["unread"] is True
     assert threads[1]["unread"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_inbox_threads_does_not_require_direct_anchor_selector():
+    """Inbox polling should still snapshot rows when IG hides /direct/t/ anchors."""
+    from sns_addict.actions.dm import DMActions
+
+    page = MagicMock()
+    page.goto = AsyncMock(return_value=None)
+    page.wait_for_selector = AsyncMock(side_effect=TimeoutError("no direct anchors"))
+    page.evaluate = AsyncMock(
+        return_value=[
+            {
+                "href": "",
+                "title": "friend",
+                "text": "friend\n새 메시지",
+                "unread": True,
+            }
+        ]
+    )
+    humanizer = MagicMock()
+    actions = DMActions(page, humanizer)
+
+    threads = await actions.list_inbox_threads()
+
+    page.wait_for_selector.assert_not_awaited()
+    assert threads[0]["unread"] is True

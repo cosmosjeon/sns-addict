@@ -183,6 +183,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._auto_stop_task: Optional[asyncio.Task[None]] = None
         self._sleep_recovery_task: Optional[asyncio.Task[None]] = None
         self._inbox_snapshot: dict[str, str] = {}
+        self._browser_action_lock = asyncio.Lock()
 
     def set_inbound_loop(self, inbound_loop: Any) -> None:
         """Wire the InboundLoop master orchestrator (W3.2)."""
@@ -349,33 +350,44 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                 from sns_addict.actions.humanize import Humanizer
 
                 dma = DMActions(self._session.page, Humanizer())
-                threads = await dma.list_inbox_threads()
+                async with self._browser_action_lock:
+                    threads = await dma.list_inbox_threads()
                 if not threads:
                     await append_event("inbox_poll_empty")
                     continue
                 changed = 0
                 next_snapshot: dict[str, str] = {}
-                for thread in threads[:20]:
+                for row_index, thread in enumerate(threads[:20]):
                     href = str(thread.get("href") or "")
                     row_text = str(thread.get("text") or thread.get("title") or "")
-                    if not href or "/direct/t/" not in href:
-                        continue
-                    thread_id = href.split("/direct/t/")[-1].rstrip("/")
-                    if not thread_id:
+                    if href and "/direct/t/" in href:
+                        thread_key = href.split("/direct/t/")[-1].rstrip("/")
+                    else:
+                        thread_key = f"row:{row_index}:{_hash_text(row_text)}"
+                    if not thread_key:
                         continue
                     signature = _hash_text(row_text)
-                    prev = self._inbox_snapshot.get(thread_id)
-                    next_snapshot[thread_id] = signature
+                    prev = self._inbox_snapshot.get(thread_key)
+                    next_snapshot[thread_key] = signature
                     if not self._inbox_snapshot:
                         continue
                     if bool(thread.get("unread")) or (prev is not None and prev != signature):
                         changed += 1
                         await append_event(
                             "inbox_poll_inbound_likely",
-                            thread_id_hash=_hash_thread(thread_id),
+                            thread_id_hash=_hash_thread(thread_key),
                             preview_hash=_hash_text(row_text),
                             unread=bool(thread.get("unread")),
+                            href_resolved=bool(href),
+                            row_index=row_index,
                         )
+                        if not href:
+                            await append_event(
+                                "inbox_poll_unresolved_thread_href",
+                                row_index=row_index,
+                                preview_hash=_hash_text(row_text),
+                            )
+                            continue
                         await self._process_inbound(
                             {
                                 "kind": "inbox_poll_inbound_likely",
@@ -486,7 +498,9 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         if not thread_id:
             return
         try:
-            messages = await dma.read_thread(thread_id, limit=5)
+            async with self._browser_action_lock:
+                messages = await dma.read_thread(thread_id, limit=5)
+                metadata = await _read_thread_metadata(self._session.page)
         except Exception as exc:
             logger.warning("read_thread failed for %s: %s", _hash_thread(thread_id), exc)
             return
@@ -496,7 +510,6 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         if last.get("is_self"):
             return
         text = str(last.get("text") or "")
-        metadata = await _read_thread_metadata(self._session.page)
         msg_event: dict[str, Any] = {
             "thread_id": thread_id,
             "text": text,
@@ -535,7 +548,8 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         thread_hash = _hash_thread(chat_id)
         start = time.time()
         try:
-            await dma.send(chat_id, content)
+            async with self._browser_action_lock:
+                await dma.send(chat_id, content)
         except Exception as exc:
             logger.warning("DM send failed for %s: %s", thread_hash, exc)
             await append_event(

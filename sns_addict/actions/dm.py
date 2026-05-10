@@ -77,28 +77,41 @@ class DMActions:
         return cast(list[dict[str, Any]], msgs) if msgs else []
 
     async def list_inbox_threads(self) -> list[dict[str, Any]]:
-        """List inbox threads with href, title, and unread flag."""
+        """List inbox threads with href, title, text signature, and unread flag.
+
+        Instagram sometimes renders DM rows without immediately exposing
+        ``a[href^="/direct/t/"]``. Do not block the fallback poller on that
+        selector; snapshot whichever row surface is present so the dashboard can
+        still show heartbeats and detect unread/text changes.
+        """
         _ = await self._page.goto(
             "https://www.instagram.com/direct/inbox/",
             wait_until="domcontentloaded",
             timeout=30000,
         )
-        _ = await self._page.wait_for_selector('a[href^="/direct/t/"]', timeout=10000)
         threads = await self._page.evaluate(
             """
             (() => {
-                const links = document.querySelectorAll('a[href^="/direct/t/"]');
-                return Array.from(links).map(a => {
-                    const text = (a.textContent || '').trim();
+                const rows = Array.from(document.querySelectorAll('a[href*="/direct/t/"], [role="listitem"], div[role="button"][tabindex="0"]'));
+                const seen = new Set();
+                return rows.map(row => {
+                    const link = row.matches?.('a[href*="/direct/t/"]')
+                        ? row
+                        : row.querySelector?.('a[href*="/direct/t/"]');
+                    const href = link?.href || '';
+                    const key = href || (row.textContent || '').trim().slice(0, 120);
+                    if (!key || seen.has(key)) return null;
+                    seen.add(key);
+                    const text = (row.textContent || '').trim();
                     return {
-                        href: a.href,
-                        title: (a.querySelector('h3, span')?.textContent || '').trim(),
+                        href,
+                        title: (row.querySelector('h3, span')?.textContent || '').trim(),
                         text,
                         unread: /unread|new message|읽지 않|새 메시지|안 읽은/i.test(text) ||
-                                !!(a.querySelector('[aria-label*="읽지 않음"]') ||
-                                   a.querySelector('[aria-label*="Unread"]')),
+                                !!(row.querySelector('[aria-label*="읽지 않음"]') ||
+                                   row.querySelector('[aria-label*="Unread"]')),
                     };
-                });
+                }).filter(Boolean);
             })()
             """
         )
