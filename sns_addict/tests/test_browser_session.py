@@ -80,3 +80,13 @@ async def test_stop_idempotent():
     session = BrowserSession(Path("/tmp/test-profile"))
     # Should not raise
     await session.stop()
+
+
+def test_missing_browser_error_detects_patchright_executable_message() -> None:
+    from sns_addict.browser.session import _is_missing_browser_error
+
+    exc = RuntimeError(
+        "BrowserType.launch_persistent_context: Executable doesn't exist at /tmp/x/Chromium"
+    )
+
+    assert _is_missing_browser_error(exc) is True

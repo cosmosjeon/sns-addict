@@ -116,3 +116,25 @@ class DMActions:
             """
         )
         return cast(list[dict[str, Any]], threads) if threads else []
+
+    async def resolve_inbox_thread_href(self, row_index: int) -> str:
+        """Click an inbox row by index and return the resulting thread URL.
+
+        Instagram can render inbox rows without a direct ``/direct/t/`` anchor.
+        The safe fallback is to click the visible row, wait briefly for client
+        navigation, then read ``location.href``. This resolves the thread id
+        without guessing from display text.
+        """
+        _ = await self._page.goto(
+            "https://www.instagram.com/direct/inbox/",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        await asyncio.sleep(1)
+        rows = await query_all_matching(self._page, "dm_thread_item")
+        if row_index < 0 or row_index >= len(rows):
+            return ""
+        await rows[row_index].click()
+        await asyncio.sleep(2)
+        href = await self._page.evaluate("() => window.location.href")
+        return str(href or "")

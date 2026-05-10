@@ -204,3 +204,43 @@ async def test_connect_keeps_browser_on_inbox_and_starts_poller(monkeypatch: pyt
     assert mock_page.evaluate.await_count == 0
     assert adapter._inbox_poll_task is not None
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_connect_returns_false_when_instagram_redirects_to_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sns_addict import adapter as adapter_mod
+
+    adapter = adapter_mod.SnsAddictAdapter(adapter_mod.PlatformConfig())
+    mock_page = MagicMock(name="page")
+    mock_page.url = "https://www.instagram.com/accounts/login/?next=/direct/inbox/"
+    mock_page.goto = AsyncMock(return_value=None)
+    mock_session = MagicMock()
+    mock_session.start = AsyncMock(return_value=mock_page)
+    mock_session.stop = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(adapter_mod, "BrowserSession", MagicMock(return_value=mock_session))
+    monkeypatch.setattr(adapter_mod, "inject_dom_observer", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter_mod, "append_event", AsyncMock(return_value=None))
+
+    assert await adapter.connect() is False
+    mock_session.stop.assert_awaited_once()
+    adapter_mod.inject_dom_observer.assert_not_awaited()
+    assert adapter.is_connected is False
+
+
+def test_inbox_thread_key_uses_stable_row_identity_when_href_missing() -> None:
+    """Href-less IG rows must not use full text hash as key or changes are invisible."""
+    from sns_addict.adapter import _inbox_thread_key
+
+    before = {"href": "", "title": "friend_1", "text": "friend_1\n어제 보낸 메시지"}
+    after = {"href": "", "title": "friend_1", "text": "friend_1\n새 메시지"}
+
+    assert _inbox_thread_key(0, before) == _inbox_thread_key(0, after)
+
+
+def test_inbox_thread_key_prefers_direct_href_when_present() -> None:
+    from sns_addict.adapter import _inbox_thread_key
+
+    row = {"href": "https://www.instagram.com/direct/t/abc123/", "text": "friend"}
+
+    assert _inbox_thread_key(5, row) == "abc123"

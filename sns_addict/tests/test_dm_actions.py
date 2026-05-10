@@ -146,3 +146,26 @@ async def test_list_inbox_threads_does_not_require_direct_anchor_selector():
 
     page.wait_for_selector.assert_not_awaited()
     assert threads[0]["unread"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_inbox_thread_href_clicks_row_without_anchor():
+    """When IG hides direct anchors, click the row and read location.href."""
+    from sns_addict.actions.dm import DMActions
+
+    row = MagicMock()
+    row.click = AsyncMock(return_value=None)
+    page = MagicMock()
+    page.goto = AsyncMock(return_value=None)
+    page.evaluate = AsyncMock(return_value="https://www.instagram.com/direct/t/abc123/")
+    humanizer = MagicMock()
+    actions = DMActions(page, humanizer)
+
+    with patch(
+        "sns_addict.actions.dm.query_all_matching",
+        new=AsyncMock(return_value=[row]),
+    ), patch("sns_addict.actions.dm.asyncio.sleep", new=AsyncMock()):
+        href = await actions.resolve_inbox_thread_href(row_index=0)
+
+    row.click.assert_awaited_once()
+    assert href == "https://www.instagram.com/direct/t/abc123/"

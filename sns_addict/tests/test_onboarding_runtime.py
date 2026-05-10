@@ -98,6 +98,67 @@ def test_instagram_login_supervisor_reports_profile_in_use(tmp_path: Path) -> No
     assert "already using this Instagram browser profile" in status["error"]
 
 
+def test_instagram_login_supervisor_does_not_treat_prelogin_cookies_as_connected(tmp_path: Path) -> None:
+    from sns_addict.onboarding import InstagramLoginSupervisor
+
+    profile_dir = tmp_path / "profile"
+    default_dir = profile_dir / "Default"
+    default_dir.mkdir(parents=True)
+    cookie_file = default_dir / "Cookies"
+    cookie_file.write_bytes(b"not-a-real-session-cookie" * 200)
+
+    supervisor = InstagramLoginSupervisor(
+        profile_dir=profile_dir,
+        cookie_file=cookie_file,
+        session_factory=lambda _profile_dir: None,
+        login_func=lambda _session: False,
+    )
+
+    status = supervisor.status()
+
+    assert status["cookies_present"] is False
+    assert status["state"] == "login_needed"
+
+
+def test_runtime_supervisor_failed_adapter_connect_stops_instead_of_running(tmp_path: Path) -> None:
+    from sns_addict.persistence.allowlist import AllowlistStore
+    from sns_addict.persistence.state import StateStore
+    from sns_addict.runtime.supervisor import RuntimeSupervisor
+
+    class FakeAdapter:
+        is_connected = False
+
+        async def connect(self) -> bool:
+            return False
+
+        async def disconnect(self) -> None:
+            self.is_connected = False
+
+    store = StateStore(tmp_path / "state.json")
+    supervisor = RuntimeSupervisor(
+        state_store=store,
+        allowlist_store=AllowlistStore(tmp_path / "allowlist.json"),
+        halt_path=tmp_path / "HALT_NOW",
+        adapter_factory=lambda _state_store: FakeAdapter(),
+        sleep=lambda _seconds: asyncio.sleep(0),
+    )
+
+    async def scenario() -> dict[str, Any]:
+        await supervisor.start("approval")
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if supervisor.health()["status"] == "error":
+                break
+        return supervisor.health()
+
+    health = asyncio.run(scenario())
+    state = asyncio.run(store.read())
+
+    assert health["status"] == "error"
+    assert "login required" in health["last_error"]
+    assert state.session_state == "stopped"
+
+
 def test_runtime_supervisor_start_stop_with_fake_adapter(tmp_path: Path) -> None:
     from sns_addict.persistence.allowlist import AllowlistStore
     from sns_addict.persistence.state import StateStore

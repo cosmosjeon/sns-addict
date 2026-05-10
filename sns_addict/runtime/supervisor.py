@@ -136,7 +136,15 @@ class RuntimeSupervisor:
     async def _run(self) -> None:
         try:
             self._adapter = self._build_adapter()
-            await self._adapter.connect()
+            connected = bool(await self._adapter.connect())
+            if not connected:
+                async def _stopped(state: State) -> State:
+                    state.session_state = "stopped"
+                    state.runtime_mode = "stopped"
+                    return state
+
+                await self._state_store.update(_stopped)
+                raise RuntimeError("Instagram login required before starting agent")
             self._status = "running"
             self._updated_at = time.time()
             await append_event("runtime_started", mode="local_dashboard")

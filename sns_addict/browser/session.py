@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -31,7 +34,26 @@ class BrowserSession:
         """Launch persistent context. NOT idempotent — call stop() before re-starting."""
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._pw = await async_playwright().start()
-        self._context = await self._pw.chromium.launch_persistent_context(
+        try:
+            self._context = await self._launch_context()
+        except Exception as exc:
+            if not _is_missing_browser_error(exc):
+                raise
+            logger.warning("Bundled Chromium missing; running patchright install chromium once")
+            await asyncio.to_thread(_install_chromium)
+            self._context = await self._launch_context()
+        self._page = (
+            self._context.pages[0]
+            if self._context.pages
+            else await self._context.new_page()
+        )
+        logger.info("BrowserSession started, profile=%s", self._profile_dir)
+        return self._page
+
+    async def _launch_context(self) -> BrowserContext:
+        if self._pw is None:
+            raise RuntimeError("Playwright not started")
+        return await self._pw.chromium.launch_persistent_context(
             user_data_dir=str(self._profile_dir),
             headless=False,
             no_viewport=True,
@@ -40,13 +62,6 @@ class BrowserSession:
             viewport={"width": 1280, "height": 800},
             # bundled Chromium only — passing a system-chrome channel arg breaks isolation (Metis decision)
         )
-        self._page = (
-            self._context.pages[0]
-            if self._context.pages
-            else await self._context.new_page()
-        )
-        logger.info("BrowserSession started, profile=%s", self._profile_dir)
-        return self._page
 
     async def stop(self) -> None:
         """Idempotent stop."""
@@ -84,3 +99,15 @@ class BrowserSession:
     @property
     def context(self) -> Optional[BrowserContext]:
         return self._context
+
+
+def _is_missing_browser_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "Executable doesn't exist" in message or "playwright install" in message.lower()
+
+
+def _install_chromium() -> None:
+    subprocess.run(
+        [sys.executable, "-m", "patchright", "install", "chromium"],
+        check=True,
+    )

@@ -229,6 +229,16 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             )
         except Exception:
             pass
+        if "instagram.com/accounts/login" in str(page.url):
+            try:
+                await append_event("adapter_login_required", url=str(page.url)[:200])
+            except Exception:
+                pass
+            try:
+                await self._session.stop()
+            finally:
+                self._session = None
+            return False
         try:
             await inject_dom_observer(page, self._on_dom_event)
             try:
@@ -360,10 +370,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                 for row_index, thread in enumerate(threads[:20]):
                     href = str(thread.get("href") or "")
                     row_text = str(thread.get("text") or thread.get("title") or "")
-                    if href and "/direct/t/" in href:
-                        thread_key = href.split("/direct/t/")[-1].rstrip("/")
-                    else:
-                        thread_key = f"row:{row_index}:{_hash_text(row_text)}"
+                    thread_key = _inbox_thread_key(row_index, thread)
                     if not thread_key:
                         continue
                     signature = _hash_text(row_text)
@@ -382,12 +389,22 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                             row_index=row_index,
                         )
                         if not href:
+                            async with self._browser_action_lock:
+                                href = await dma.resolve_inbox_thread_href(row_index)
+                            if "/direct/t/" not in href:
+                                await append_event(
+                                    "inbox_poll_unresolved_thread_href",
+                                    row_index=row_index,
+                                    preview_hash=_hash_text(row_text),
+                                )
+                                continue
                             await append_event(
-                                "inbox_poll_unresolved_thread_href",
+                                "inbox_poll_thread_href_resolved_by_click",
                                 row_index=row_index,
-                                preview_hash=_hash_text(row_text),
+                                thread_id_hash=_hash_thread(
+                                    href.split("/direct/t/")[-1].rstrip("/")
+                                ),
                             )
-                            continue
                         await self._process_inbound(
                             {
                                 "kind": "inbox_poll_inbound_likely",
@@ -728,6 +745,23 @@ def _record_send_counter(state: State, thread_id: str) -> None:
     hour_list = [t for t in c.per_friend_hour.get(thread_id, []) if now - t < hour_window_seconds]
     hour_list.append(now)
     c.per_friend_hour[thread_id] = hour_list
+
+
+def _inbox_thread_key(row_index: int, thread: dict[str, Any]) -> str:
+    """Return a stable key for one inbox row across preview text changes."""
+    href = str(thread.get("href") or "")
+    if href and "/direct/t/" in href:
+        return href.split("/direct/t/")[-1].rstrip("/")
+    title = str(thread.get("title") or "").strip()
+    if not title:
+        row_text = str(thread.get("text") or "").strip()
+        title = next((part.strip() for part in row_text.splitlines() if part.strip()), "")
+    if title:
+        return f"row:{row_index}:title:{_hash_text(title)}"
+    row_text = str(thread.get("text") or "").strip()
+    if not row_text:
+        return f"row:{row_index}:empty"
+    return f"row:{row_index}:preview:{_hash_text(row_text[:40])}"
 
 
 async def _read_thread_metadata(page: Any) -> dict[str, Any]:

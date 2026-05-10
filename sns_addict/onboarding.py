@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -195,16 +196,35 @@ class InstagramLoginSupervisor:
         return "disconnected"
 
     def _cookies_present(self) -> bool:
-        try:
-            return self._cookie_file.exists() and self._cookie_file.stat().st_size > _COOKIE_MIN_BYTES
-        except OSError:
-            return False
+        return _instagram_session_cookie_present(self._cookie_file)
 
     def _profile_lock_present(self) -> bool:
         return any(
             os.path.lexists(str(self._profile_dir / name))
             for name in ("SingletonLock", "SingletonCookie", "SingletonSocket")
         )
+
+
+def _instagram_session_cookie_present(cookie_file: Path) -> bool:
+    """Return True only when Chrome cookies contain authenticated IG markers."""
+    try:
+        if not cookie_file.exists() or cookie_file.stat().st_size <= _COOKIE_MIN_BYTES:
+            return False
+    except OSError:
+        return False
+    try:
+        con = sqlite3.connect(f"file:{cookie_file}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "select name from cookies where host_key like ? and name in (?, ?, ?)",
+                ("%instagram.com", "sessionid", "ds_user_id", "rur"),
+            ).fetchall()
+        finally:
+            con.close()
+        names = {str(row[0]) for row in rows}
+        return "sessionid" in names and "ds_user_id" in names
+    except sqlite3.Error:
+        return False
 
 
 def _is_profile_in_use_error(exc: Exception) -> bool:
