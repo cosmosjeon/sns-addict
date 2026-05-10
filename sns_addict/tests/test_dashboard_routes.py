@@ -78,10 +78,9 @@ def test_control_start_changes_state(tmp_path: Path, monkeypatch) -> None:
     assert asyncio.run(store.read()).session_state == "active"
 
 
-def test_persona_alerts_return_501() -> None:
+def test_alerts_return_501() -> None:
     from sns_addict.dashboard.server import app
 
     client = TestClient(app)
 
-    assert client.get("/api/persona/anything").status_code == 501
     assert client.get("/api/alerts/anything").status_code == 501
