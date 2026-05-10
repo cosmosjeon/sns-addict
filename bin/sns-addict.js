@@ -39,13 +39,21 @@ function run(command, args, options = {}) {
   return result;
 }
 
+function pythonMeetsMinimumVersion(candidate) {
+  const result = spawnSync(
+    candidate,
+    ["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"],
+    { stdio: "ignore" },
+  );
+  return !result.error && result.status === 0;
+}
+
 function findPython() {
   const candidates = process.env.PYTHON ? [process.env.PYTHON] : ["python3", "python"];
   for (const candidate of candidates) {
-    const result = spawnSync(candidate, ["--version"], { stdio: "ignore" });
-    if (!result.error && result.status === 0) return candidate;
+    if (pythonMeetsMinimumVersion(candidate)) return candidate;
   }
-  fail("Python 3.10+ is required. Install Python, then run sns-addict again.");
+  fail("Python 3.10+ is required. Install Python, set PYTHON=/path/to/python3.10+, then run sns-addict again.");
 }
 
 function packageSignature() {
@@ -56,19 +64,6 @@ function packageSignature() {
 function pathHasHermesAuxiliary(candidate) {
   if (!candidate) return false;
   return fs.existsSync(path.join(candidate, "agent", "auxiliary_client.py"));
-}
-
-function hermesPythonPaths(hermesSource) {
-  const paths = [hermesSource];
-  for (const venvName of [".venv", "venv"]) {
-    const libDir = path.join(hermesSource, venvName, "lib");
-    if (!fs.existsSync(libDir)) continue;
-    for (const entry of fs.readdirSync(libDir)) {
-      const sitePackages = path.join(libDir, entry, "site-packages");
-      if (fs.existsSync(sitePackages)) paths.push(sitePackages);
-    }
-  }
-  return paths;
 }
 
 function detectHermesSource() {
@@ -98,19 +93,43 @@ function detectHermesSource() {
   return null;
 }
 
-function buildRuntimeEnv() {
-  const env = { ...process.env };
-  const hermesSource = detectHermesSource();
-  if (hermesSource) {
-    const existing = env.PYTHONPATH ? env.PYTHONPATH.split(path.delimiter) : [];
-    for (const hermesPath of hermesPythonPaths(hermesSource).reverse()) {
-      if (!existing.includes(hermesPath)) {
-        existing.unshift(hermesPath);
-      }
+function hermesPythonPaths(hermesSource) {
+  const paths = [hermesSource];
+  for (const venvName of [".venv", "venv"]) {
+    const libDir = path.join(hermesSource, venvName, "lib");
+    if (!fs.existsSync(libDir)) continue;
+    for (const entry of fs.readdirSync(libDir)) {
+      const sitePackages = path.join(libDir, entry, "site-packages");
+      if (fs.existsSync(sitePackages)) paths.push(sitePackages);
     }
-    env.PYTHONPATH = existing.filter(Boolean).join(path.delimiter);
-    env.SNS_ADDICT_HERMES_SOURCE = hermesSource;
   }
+  return paths;
+}
+
+function getVenvSitePackages() {
+  const script = "import site; print(site.getsitepackages()[0])";
+  const result = spawnSync(pythonInVenv, ["-c", script], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout.trim();
+}
+
+function configureHermesBridge() {
+  const hermesSource = detectHermesSource();
+  if (!hermesSource) return null;
+  const sitePackages = getVenvSitePackages();
+  if (!sitePackages) return hermesSource;
+  const bridgeFile = path.join(sitePackages, "sns_addict_hermes_bridge.pth");
+  // Use a .pth bridge instead of PYTHONPATH. .pth entries are appended after
+  // the npm private venv's own site-packages, so the private venv keeps its
+  // matching compiled wheels (pydantic-core, uvloop, etc.) while Hermes-only
+  // dependencies can still be imported from the local Hermes install.
+  fs.writeFileSync(bridgeFile, `${hermesPythonPaths(hermesSource).join("\n")}\n`, "utf8");
+  return hermesSource;
+}
+
+function buildRuntimeEnv(hermesSource) {
+  const env = { ...process.env };
+  if (hermesSource) env.SNS_ADDICT_HERMES_SOURCE = hermesSource;
   return env;
 }
 
@@ -137,7 +156,8 @@ function ensureVenv() {
 }
 
 ensureVenv();
-const runtimeEnv = buildRuntimeEnv();
+const hermesSource = configureHermesBridge();
+const runtimeEnv = buildRuntimeEnv(hermesSource);
 const result = spawnSync(cliInVenv, process.argv.slice(2), { stdio: "inherit", env: runtimeEnv });
 if (result.error) fail("Failed to launch Python sns-addict CLI", result.error);
 process.exit(result.status === null ? 1 : result.status);
