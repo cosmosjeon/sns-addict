@@ -1,0 +1,30 @@
+{
+  "name": "sns-addict",
+  "version": "0.1.0",
+  "description": "Local supervised Instagram persona dashboard powered by Hermes/Python",
+  "license": "MIT",
+  "private": false,
+  "bin": {
+    "sns-addict": "bin/sns-addict.js"
+  },
+  "files": [
+    "bin/sns-addict.js",
+    "sns_addict/**",
+    "assets/**",
+    "pyproject.toml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "python -m pytest -q -p no:cacheprovider sns_addict/tests/test_npm_wrapper.py"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "hermes",
+    "instagram",
+    "persona",
+    "dashboard",
+    "local-first"
+  ]
+}
