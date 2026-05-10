@@ -230,13 +230,32 @@ class InboundLoop:
                 await append_event("guard_block", reason="loop_detector", thread_id_hash=_hash_thread(thread_id))
                 return
 
-            # Step 4 — LLM (thinking pause + invoke)
+            # Step 4 — LLM (thinking pause + invoke). In approval mode, an
+            # unavailable auxiliary LLM should still prove that the inbound DM
+            # was detected by surfacing a non-sendable diagnostic proposal.
             thinking_delay = self._humanizer.next_pause("thinking")
             await asyncio.sleep(thinking_delay)
-            reply: str = await self._adapter.invoke_llm(event)
+            try:
+                reply: str = await self._adapter.invoke_llm(event)
+            except Exception as exc:  # noqa: BLE001
+                await append_event(
+                    "llm_draft_failed",
+                    thread_id_hash=_hash_thread(thread_id),
+                    error=str(exc)[:200],
+                )
+                latest_mode = await self._runtime_mode()
+                if latest_mode == "approval":
+                    await self._enqueue_proposal(
+                        event,
+                        "[LLM unavailable — inbound DM detected, but draft generation failed. "
+                        "Check Hermes auxiliary LLM auth/config before approving replies.]",
+                        latest_mode,
+                    )
+                return
 
             if not reply:
                 logger.warning("LLM returned empty reply for thread %s — skipping send", thread_id)
+                await append_event("llm_empty_reply", thread_id_hash=_hash_thread(thread_id))
                 return
 
             # Step 5 — dedup

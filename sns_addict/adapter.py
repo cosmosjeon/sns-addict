@@ -178,8 +178,10 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._soul_task: Optional[asyncio.Task[None]] = None
         self._state_watcher_task: Optional[asyncio.Task[None]] = None
         self._approval_sender_task: Optional[asyncio.Task[None]] = None
+        self._inbox_poll_task: Optional[asyncio.Task[None]] = None
         self._auto_stop_task: Optional[asyncio.Task[None]] = None
         self._sleep_recovery_task: Optional[asyncio.Task[None]] = None
+        self._inbox_snapshot: dict[str, str] = {}
 
     def set_inbound_loop(self, inbound_loop: Any) -> None:
         """Wire the InboundLoop master orchestrator (W3.2)."""
@@ -238,45 +240,16 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             except Exception:
                 pass
 
-        try:
-            click_result = await page.evaluate("""
-                () => new Promise((resolve) => {
-                    let attempts = 0;
-                    const skip = ['메시지 보내기', 'Send Message', '내 메모', '새로운 메시지', '새 소식'];
-                    const tryClick = () => {
-                        attempts++;
-                        const items = document.querySelectorAll('[role="listitem"]');
-                        for (const it of items) {
-                            const txt = (it.textContent || '').trim();
-                            if (!txt || txt.length < 3) continue;
-                            if (skip.some(s => txt.includes(s))) continue;
-                            if (txt.includes('deski.ai') && txt.length < 30) continue;
-                            try {
-                                it.click();
-                                resolve({ok: true, attempts, text: txt.slice(0, 120)});
-                                return;
-                            } catch (e) {}
-                        }
-                        if (attempts > 40) {
-                            resolve({ok: false, attempts, last_count: items.length});
-                            return;
-                        }
-                        setTimeout(tryClick, 500);
-                    };
-                    tryClick();
-                })
-            """)
-            await append_event("thread_click_result", **click_result)
-            if click_result.get("ok"):
-                await asyncio.sleep(3)
-                await append_event("entered_thread", url=str(page.url)[:200])
-        except Exception as exc:
-            await append_event("thread_click_failed", error=str(exc)[:200])
+        # Keep Chromium on the inbox list. Older builds auto-clicked the first
+        # thread here, which made new-message detection look broken because the
+        # observer was watching one conversation instead of the inbox.
+        await append_event("inbox_watch_ready", url=str(page.url)[:200])
         self._halt_task = asyncio.create_task(HaltNow().watch(self))
         self._soul_task = asyncio.create_task(watch_soul_md())
         self._auto_stop_task = asyncio.create_task(AutoStop(self).watch())
         self._sleep_recovery_task = asyncio.create_task(SleepRecovery(self).watch())
         self._approval_sender_task = asyncio.create_task(self._watch_approved_sends())
+        self._inbox_poll_task = asyncio.create_task(self._watch_inbox_changes())
         await self._state_store.update(_set_session_active)
         self._mark_connected()
         logger.info("SnsAddictAdapter connected")
@@ -293,6 +266,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             self._auto_stop_task,
             self._sleep_recovery_task,
             self._approval_sender_task,
+            self._inbox_poll_task,
         ):
             if task is not None and not task.done():
                 task.cancel()
@@ -352,6 +326,77 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.debug("approved send watcher error: %s", exc)
+
+
+    async def _watch_inbox_changes(self) -> None:
+        """Poll the Instagram inbox as a fallback to DOM observer callbacks.
+
+        Instagram DOM/aria labels drift often. This watcher compares the inbox
+        thread list snapshot and emits inbound events when a thread row changes
+        or exposes an unread hint. It keeps the MVP observable even when the
+        injected observer misses React updates.
+        """
+        while True:
+            await asyncio.sleep(3)
+            try:
+                state = await self._state_store.read()
+                if state.session_state != "active" or state.runtime_mode == "stopped":
+                    continue
+                if self._session is None or self._session.page is None:
+                    continue
+                from sns_addict.actions.dm import DMActions
+                from sns_addict.actions.humanize import Humanizer
+
+                dma = DMActions(self._session.page, Humanizer())
+                threads = await dma.list_inbox_threads()
+                if not threads:
+                    await append_event("inbox_poll_empty")
+                    continue
+                changed = 0
+                next_snapshot: dict[str, str] = {}
+                for thread in threads[:20]:
+                    href = str(thread.get("href") or "")
+                    row_text = str(thread.get("text") or thread.get("title") or "")
+                    if not href or "/direct/t/" not in href:
+                        continue
+                    thread_id = href.split("/direct/t/")[-1].rstrip("/")
+                    if not thread_id:
+                        continue
+                    signature = _hash_text(row_text)
+                    prev = self._inbox_snapshot.get(thread_id)
+                    next_snapshot[thread_id] = signature
+                    if not self._inbox_snapshot:
+                        continue
+                    if bool(thread.get("unread")) or (prev is not None and prev != signature):
+                        changed += 1
+                        await append_event(
+                            "inbox_poll_inbound_likely",
+                            thread_id_hash=_hash_thread(thread_id),
+                            preview_hash=_hash_text(row_text),
+                            unread=bool(thread.get("unread")),
+                        )
+                        await self._process_inbound(
+                            {
+                                "kind": "inbox_poll_inbound_likely",
+                                "thread_href": href,
+                                "preview": row_text,
+                                "ts": time.time(),
+                            }
+                        )
+                self._inbox_snapshot = next_snapshot
+                await append_event(
+                    "inbox_poll_heartbeat",
+                    thread_count=len(next_snapshot),
+                    changed=changed,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("inbox poll watcher error: %s", exc)
+                try:
+                    await append_event("inbox_poll_error", error=str(exc)[:200])
+                except Exception:
+                    pass
 
     async def _claim_approved_send(self) -> dict[str, Any] | None:
         claimed: dict[str, Any] | None = None

@@ -54,42 +54,6 @@ _OBSERVER_SCRIPT = """
 
     let pollCount = 0;
     let lastMainText = '';
-    let threadClicked = false;
-    const SKIP = ['메시지 보내기', 'Send Message', '내 메모', '새로운 메시지', '새 소식'];
-
-    const tryClickThread = () => {
-        if (threadClicked) return;
-        if (location.pathname.includes('/direct/t/')) {
-            threadClicked = true;
-            try {
-                window.__sns_dom_event({
-                    kind: 'observer_alive',
-                    thread_count: 1,
-                    preview: 'already in thread: ' + location.pathname,
-                    ts: Date.now(),
-                });
-            } catch (e) {}
-            return;
-        }
-        const items = document.querySelectorAll('[role="listitem"]');
-        for (const it of items) {
-            const txt = (it.textContent || '').trim();
-            if (!txt || txt.length < 3) continue;
-            if (SKIP.some(s => txt.includes(s))) continue;
-            if (txt.includes('deski.ai') && txt.length < 30) continue;
-            try {
-                it.click();
-                threadClicked = true;
-                window.__sns_dom_event({
-                    kind: 'observer_alive',
-                    thread_count: items.length,
-                    preview: 'clicked thread: ' + txt.slice(0, 80),
-                    ts: Date.now(),
-                });
-                return;
-            } catch (e) {}
-        }
-    };
     const scanThreadView = () => {
         const main = document.querySelector('[role="main"]');
         if (!main) return;
@@ -108,7 +72,6 @@ _OBSERVER_SCRIPT = """
     };
     const scanInbox = () => {
         pollCount++;
-        tryClickThread();
         if (location.pathname.includes('/direct/t/')) {
             scanThreadView();
             if (pollCount % 5 === 1) {

@@ -635,3 +635,34 @@ async def test_bounded_queue_overflow(tmp_path: Path):
         assert any("inbound_dropped_overflow" in c for c in calls)
         _ = event_hold.set()
         await loop.stop()
+
+
+@pytest.mark.asyncio
+async def test_approval_mode_enqueues_diagnostic_when_llm_unavailable(tmp_path: Path):
+    from sns_addict.loops.inbound import InboundLoop
+
+    guardrails = make_guardrails()
+    adapter = AsyncMock()
+    adapter.invoke_llm = AsyncMock(side_effect=RuntimeError("No auxiliary client available"))
+    adapter.send = AsyncMock()
+    humanizer = MagicMock()
+    humanizer.next_pause = MagicMock(return_value=0)
+    state_store = await make_state_store(tmp_path, "approval")
+    loop = InboundLoop(
+        adapter=adapter,
+        guardrails=guardrails,
+        humanizer=humanizer,
+        state_store=state_store,
+        allowlist_store=await make_allowlist_store(tmp_path, ["friend-1"]),
+    )
+
+    with patch("sns_addict.loops.inbound.append_event", new_callable=AsyncMock) as mock_append:
+        await loop.on_inbound(make_event(thread_id="t1", chat_type="dm", username="friend-1"))
+        await asyncio.sleep(0.1)
+
+    state = await state_store.read()
+    assert state.pending_sends
+    assert "LLM unavailable" in state.pending_sends[0]["proposed_reply"]
+    adapter.send.assert_not_called()
+    calls = [str(c) for c in mock_append.call_args_list]
+    assert any("llm_draft_failed" in c for c in calls)

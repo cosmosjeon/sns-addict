@@ -88,12 +88,17 @@ class DMActions:
             """
             (() => {
                 const links = document.querySelectorAll('a[href^="/direct/t/"]');
-                return Array.from(links).map(a => ({
-                    href: a.href,
-                    title: (a.querySelector('h3, span')?.textContent || '').trim(),
-                    unread: !!(a.querySelector('[aria-label*="\\uc77d\\uc9c0 \\uc54a\\uc74c"]') ||
-                               a.querySelector('[aria-label*="Unread"]')),
-                }));
+                return Array.from(links).map(a => {
+                    const text = (a.textContent || '').trim();
+                    return {
+                        href: a.href,
+                        title: (a.querySelector('h3, span')?.textContent || '').trim(),
+                        text,
+                        unread: /unread|new message|읽지 않|새 메시지|안 읽은/i.test(text) ||
+                                !!(a.querySelector('[aria-label*="읽지 않음"]') ||
+                                   a.querySelector('[aria-label*="Unread"]')),
+                    };
+                });
             })()
             """
         )

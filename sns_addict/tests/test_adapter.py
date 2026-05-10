@@ -173,3 +173,34 @@ async def test_complete_approved_send_records_volume_counter(
     assert state.send_counters.day_count == 1
     assert state.send_counters.per_friend_day["thread-1"] == 1
     assert len(state.send_counters.per_friend_hour["thread-1"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_keeps_browser_on_inbox_and_starts_poller(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sns_addict import adapter as adapter_mod
+
+    cfg = adapter_mod.PlatformConfig()
+    adapter = adapter_mod.SnsAddictAdapter(cfg)
+
+    mock_page = MagicMock(name="page")
+    mock_page.url = "https://www.instagram.com/direct/inbox/"
+    mock_page.goto = AsyncMock(return_value=None)
+    mock_page.evaluate = AsyncMock(return_value=None)
+    mock_session = MagicMock()
+    mock_session.start = AsyncMock(return_value=mock_page)
+    mock_session.stop = AsyncMock(return_value=None)
+    mock_halt = MagicMock()
+    mock_halt.watch = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(adapter_mod, "BrowserSession", MagicMock(return_value=mock_session))
+    monkeypatch.setattr(adapter_mod, "inject_dom_observer", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter_mod, "HaltNow", MagicMock(return_value=mock_halt))
+    monkeypatch.setattr(adapter_mod, "watch_soul_md", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter_mod, "append_event", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter_mod.STATE_STORE, "update", AsyncMock(return_value=None))
+
+    assert await adapter.connect() is True
+
+    assert mock_page.evaluate.await_count == 0
+    assert adapter._inbox_poll_task is not None
+    await adapter.disconnect()

@@ -56,3 +56,12 @@ async def test_event_payload_shape():
 
     for key in ["kind", "thread_href", "preview", "ts"]:
         assert key in script
+
+
+@pytest.mark.asyncio
+async def test_observer_script_does_not_auto_click_threads() -> None:
+    import sns_addict.detection.dom_observer as mod
+
+    script = mod._OBSERVER_SCRIPT
+    assert "it.click()" not in script
+    assert "tryClickThread" not in script
