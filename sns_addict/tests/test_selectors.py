@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 @pytest.mark.asyncio
 async def test_click_first_matching_first_works():
     """First selector matches — returns True, click called once."""
-    from sns_addict.browser.selectors import click_first_matching, SELECTORS
+    from sns_addict.browser.selectors import click_first_matching
 
     page = MagicMock()
     locator = MagicMock()
@@ -26,7 +26,7 @@ async def test_click_first_matching_first_works():
 @pytest.mark.asyncio
 async def test_click_first_matching_second_falls_back():
     """First selector fails, second succeeds."""
-    from sns_addict.browser.selectors import click_first_matching, SELECTORS
+    from sns_addict.browser.selectors import click_first_matching
 
     call_count = 0
 

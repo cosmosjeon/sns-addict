@@ -109,7 +109,7 @@ def _step4_soul_md_install() -> None:
             ts = int(time.time())
             backup = _SOUL_MD.with_name(f"SOUL.md.backup-{ts}")
             backup.write_bytes(_SOUL_MD.read_bytes())
-            print(f"  ⚠️  SOUL.md differs from packaged version.")
+            print("  ⚠️  SOUL.md differs from packaged version.")
             print(f"  Backup saved: {backup}")
             answer = input("  Install packaged SOUL.md? [y/N] ").strip().lower()
             if answer != "y":
@@ -228,9 +228,9 @@ def _step8_install_method_log() -> None:
     if method_file.exists():
         method = method_file.read_text(encoding="utf-8").strip()
         if method == "pip_git":
-            print(f"  ℹ️  Install method: pip install git+https://github.com/cosmosjeon/sns-addict.git")
+            print("  ℹ️  Install method: pip install git+https://github.com/cosmosjeon/sns-addict.git")
         else:
-            print(f"  ℹ️  Install method: hermes plugins install cosmosjeon/sns-addict")
+            print("  ℹ️  Install method: hermes plugins install cosmosjeon/sns-addict")
     else:
         print("  ℹ️  Install method: hermes plugins install cosmosjeon/sns-addict (default)")
 

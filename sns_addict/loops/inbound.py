@@ -17,7 +17,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from sns_addict.persistence.events import append_event

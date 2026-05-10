@@ -119,12 +119,12 @@ except ImportError:
         return (None, None)
 
 
-from sns_addict.browser.session import BrowserSession
-from sns_addict.detection.dom_observer import inject_dom_observer
-from sns_addict.guardrails.halt_now import HaltNow, watch_soul_md
-from sns_addict.persistence.events import append_event
-from sns_addict.persistence.state import State, StateStore
-from sns_addict.utils.long_run import AutoStop, SleepRecovery
+from sns_addict.browser.session import BrowserSession  # noqa: E402
+from sns_addict.detection.dom_observer import inject_dom_observer  # noqa: E402
+from sns_addict.guardrails.halt_now import HaltNow, watch_soul_md  # noqa: E402
+from sns_addict.persistence.events import append_event  # noqa: E402
+from sns_addict.persistence.state import State, StateStore  # noqa: E402
+from sns_addict.utils.long_run import AutoStop, SleepRecovery  # noqa: E402
 
 STATE_STORE = StateStore()
 REPLIES_F3_PATH = Path.home() / ".hermes" / "sns-addict" / "logs" / "replies-f3.jsonl"
