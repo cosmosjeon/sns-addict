@@ -29,7 +29,7 @@ function fail(message, error) {
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     stdio: options.stdio || "inherit",
-    env: process.env,
+    env: options.env || process.env,
     cwd: options.cwd || packageRoot,
   });
   if (result.error) fail(`Failed to run ${command}`, result.error);
@@ -51,6 +51,67 @@ function findPython() {
 function packageSignature() {
   const stat = fs.statSync(pyproject);
   return `${packageRoot}\n${stat.mtimeMs}\n${stat.size}`;
+}
+
+function pathHasHermesAuxiliary(candidate) {
+  if (!candidate) return false;
+  return fs.existsSync(path.join(candidate, "agent", "auxiliary_client.py"));
+}
+
+function hermesPythonPaths(hermesSource) {
+  const paths = [hermesSource];
+  for (const venvName of [".venv", "venv"]) {
+    const libDir = path.join(hermesSource, venvName, "lib");
+    if (!fs.existsSync(libDir)) continue;
+    for (const entry of fs.readdirSync(libDir)) {
+      const sitePackages = path.join(libDir, entry, "site-packages");
+      if (fs.existsSync(sitePackages)) paths.push(sitePackages);
+    }
+  }
+  return paths;
+}
+
+function detectHermesSource() {
+  const candidates = [
+    process.env.SNS_ADDICT_HERMES_SOURCE,
+    process.env.HERMES_AGENT_HOME,
+    path.join(os.homedir(), "hermes-agent"),
+    path.join(os.homedir(), ".hermes", "hermes-agent"),
+  ];
+
+  const whichHermes = spawnSync(process.platform === "win32" ? "where" : "which", ["hermes"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (whichHermes.status === 0 && whichHermes.stdout) {
+    for (const line of whichHermes.stdout.split(/\r?\n/)) {
+      const hermesBin = line.trim();
+      if (!hermesBin) continue;
+      candidates.push(path.resolve(path.dirname(hermesBin), "..", ".."));
+      candidates.push(path.resolve(path.dirname(hermesBin), ".."));
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (pathHasHermesAuxiliary(candidate)) return candidate;
+  }
+  return null;
+}
+
+function buildRuntimeEnv() {
+  const env = { ...process.env };
+  const hermesSource = detectHermesSource();
+  if (hermesSource) {
+    const existing = env.PYTHONPATH ? env.PYTHONPATH.split(path.delimiter) : [];
+    for (const hermesPath of hermesPythonPaths(hermesSource).reverse()) {
+      if (!existing.includes(hermesPath)) {
+        existing.unshift(hermesPath);
+      }
+    }
+    env.PYTHONPATH = existing.filter(Boolean).join(path.delimiter);
+    env.SNS_ADDICT_HERMES_SOURCE = hermesSource;
+  }
+  return env;
 }
 
 function needsInstall() {
@@ -76,6 +137,7 @@ function ensureVenv() {
 }
 
 ensureVenv();
-const result = spawnSync(cliInVenv, process.argv.slice(2), { stdio: "inherit", env: process.env });
+const runtimeEnv = buildRuntimeEnv();
+const result = spawnSync(cliInVenv, process.argv.slice(2), { stdio: "inherit", env: runtimeEnv });
 if (result.error) fail("Failed to launch Python sns-addict CLI", result.error);
 process.exit(result.status === null ? 1 : result.status);
