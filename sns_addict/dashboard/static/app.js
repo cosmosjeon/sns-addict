@@ -169,7 +169,7 @@ function renderInstagramStatus(data) {
   pill.textContent = loginState;
   pill.className = "pill " + (
     loginState === "connected" ? "pill-active"
-      : (loginState === "error" ? "pill-stopped" : "pill-idle")
+      : (["error", "profile_in_use"].includes(loginState) ? "pill-stopped" : "pill-idle")
   );
   stateEl.textContent = loginState;
   profileEl.textContent = data?.profile_dir_exists
@@ -177,7 +177,7 @@ function renderInstagramStatus(data) {
     : "profile not created";
   btn.disabled = loginState === "connecting";
   btn.textContent = loginState === "connecting" ? "Chromium login running…" : "Connect Instagram";
-  if (loginState === "error" && data?.error) {
+  if (["error", "profile_in_use"].includes(loginState) && data?.error) {
     errEl.textContent = data.error;
     errEl.classList.remove("hidden");
   } else {

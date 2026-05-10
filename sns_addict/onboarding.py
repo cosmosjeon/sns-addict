@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -29,7 +30,14 @@ _PACKAGED_SOUL = Path(__file__).parent.parent / "assets" / "SOUL.md"
 _COOKIE_FILE = _PROFILE_DIR / "Default" / "Cookies"
 _COOKIE_MIN_BYTES = 1024
 
-LoginState = Literal["disconnected", "login_needed", "connecting", "connected", "error"]
+LoginState = Literal[
+    "disconnected",
+    "login_needed",
+    "connecting",
+    "connected",
+    "profile_in_use",
+    "error",
+]
 
 
 def ensure_local_product_files(
@@ -105,12 +113,17 @@ class InstagramLoginSupervisor:
             "browser_active": self._session is not None and state == "connecting",
             "started_at": self._started_at,
             "updated_at": self._updated_at,
-            "error": self._last_error if state == "error" else None,
+            "error": self._last_error if state in {"error", "profile_in_use"} else None,
         }
 
     async def connect(self) -> dict[str, Any]:
         """Start a headful Chromium login flow if one is not already running."""
         ensure_local_product_files()
+        if self._profile_lock_present():
+            self._state = "profile_in_use"
+            self._last_error = _profile_in_use_message(self._profile_dir)
+            self._updated_at = time.time()
+            return self.status()
         if self._task is not None and not self._task.done():
             return self.status()
         self._state = "connecting"
@@ -155,8 +168,12 @@ class InstagramLoginSupervisor:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("Instagram login flow failed: %s", exc)
-            self._state = "error"
-            self._last_error = str(exc)[:200]
+            if _is_profile_in_use_error(exc):
+                self._state = "profile_in_use"
+                self._last_error = _profile_in_use_message(self._profile_dir)
+            else:
+                self._state = "error"
+                self._last_error = str(exc)[:200]
         finally:
             try:
                 if self._session is not None:
@@ -169,8 +186,8 @@ class InstagramLoginSupervisor:
     def _derived_state(self) -> LoginState:
         if self._task is not None and not self._task.done():
             return "connecting"
-        if self._state == "error":
-            return "error"
+        if self._state in {"error", "profile_in_use"}:
+            return self._state
         if self._state == "connected" or self._cookies_present():
             return "connected"
         if self._profile_dir.exists():
@@ -182,3 +199,22 @@ class InstagramLoginSupervisor:
             return self._cookie_file.exists() and self._cookie_file.stat().st_size > _COOKIE_MIN_BYTES
         except OSError:
             return False
+
+    def _profile_lock_present(self) -> bool:
+        return any(
+            os.path.lexists(str(self._profile_dir / name))
+            for name in ("SingletonLock", "SingletonCookie", "SingletonSocket")
+        )
+
+
+def _is_profile_in_use_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "ProcessSingleton" in message or "profile is already in use" in message
+
+
+def _profile_in_use_message(profile_dir: Path) -> str:
+    return (
+        "Another Chromium window is already using this Instagram browser profile. "
+        "Click Emergency Stop, close the sns-addict Instagram Chromium window, then try "
+        f"Connect Instagram again. Profile: {profile_dir}"
+    )

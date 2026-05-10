@@ -69,6 +69,35 @@ def test_instagram_login_supervisor_uses_headful_browser_fakes(tmp_path: Path) -
     assert supervisor.status()["state"] == "connected"
 
 
+def test_instagram_login_supervisor_reports_profile_in_use(tmp_path: Path) -> None:
+    from sns_addict.onboarding import InstagramLoginSupervisor
+
+    class FailIfStartedSession:
+        def __init__(self, _profile_dir: Path) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise AssertionError("login browser should not start while profile lock exists")
+
+        async def stop(self) -> None:
+            pass
+
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    (profile_dir / "SingletonLock").write_text("locked", encoding="utf-8")
+    supervisor = InstagramLoginSupervisor(
+        profile_dir=profile_dir,
+        cookie_file=profile_dir / "Default" / "Cookies",
+        session_factory=FailIfStartedSession,
+        login_func=lambda _session: True,
+    )
+
+    status = asyncio.run(supervisor.connect())
+
+    assert status["state"] == "profile_in_use"
+    assert "already using this Instagram browser profile" in status["error"]
+
+
 def test_runtime_supervisor_start_stop_with_fake_adapter(tmp_path: Path) -> None:
     from sns_addict.persistence.allowlist import AllowlistStore
     from sns_addict.persistence.state import StateStore
