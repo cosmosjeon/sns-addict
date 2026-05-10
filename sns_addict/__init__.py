@@ -35,7 +35,29 @@ def register(ctx: Any) -> None:
             else:
                 port = 8765
         if not isinstance(port, int):
-            raise ValueError("dashboard_port must be int")
+            raise ValueError("dashboard_port must be int, got: " + repr(port))
+        if not (1024 <= port <= 65535):
+            raise ValueError(f"dashboard_port must be 1024-65535, got: {port}")
+
+        extra = getattr(cfg, "extra", {}) or {}
+        try:
+            instagram = extra.get("instagram", {}) or {}
+            soul_path = extra.get("soul_path", None)
+        except AttributeError:
+            instagram = {}
+            soul_path = None
+        try:
+            username = instagram.get("username")
+            password = instagram.get("password")
+        except AttributeError:
+            username = None
+            password = None
+        if not username:
+            raise ValueError("Missing required config: instagram.username")
+        if not password:
+            raise ValueError("Missing required config: instagram.password")
+        if soul_path is not None and not soul_path:
+            raise ValueError("soul_path must be a non-empty string if specified")
 
     def is_connected() -> bool:
         return False

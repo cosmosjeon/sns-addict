@@ -77,7 +77,11 @@ except ImportError:
         _background_tasks: set[asyncio.Task[Any]]
         _message_handler: Any
 
-        def __init__(self, config: PlatformConfig, platform: Platform) -> None:
+        def __init__(
+            self,
+            config: PlatformConfig,
+            platform: Platform,
+        ) -> None:
             self.config = config
             self.platform = platform
             self._running = False
@@ -93,6 +97,26 @@ except ImportError:
 
         def _mark_disconnected(self) -> None:
             self._running = False
+
+
+try:
+    from agent.auxiliary_client import (  # pyright: ignore[reportMissingImports]
+        get_async_text_auxiliary_client,
+    )
+
+    _hermes_auxiliary_available = True
+except ImportError:
+    # Dev/test fallback: keep the symbol importable at module level so that
+    # ``sns_addict.adapter.get_async_text_auxiliary_client`` can be patched in
+    # tests, and so ``invoke_llm`` raises a clear RuntimeError rather than
+    # NameError when Hermes-auth is not on PYTHONPATH.
+    _hermes_auxiliary_available = False
+
+    def get_async_text_auxiliary_client(  # type: ignore[misc]
+        task: str = "",
+        **_kwargs: Any,
+    ) -> tuple[Any, Any]:
+        return (None, None)
 
 
 from sns_addict.browser.session import BrowserSession
@@ -155,6 +179,13 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         if self.is_connected:
             return True
         profile_dir = Path.home() / ".hermes" / "sns-addict" / "profile"
+        singleton_lock = profile_dir / "SingletonLock"
+        if singleton_lock.exists():
+            singleton_lock.unlink()
+            logger.warning(
+                "cleared_stale_singleton_lock",
+                extra={"path": str(singleton_lock)},
+            )
         self._session = BrowserSession(profile_dir=profile_dir)
         page = await self._session.start()
         await inject_dom_observer(page, self._on_dom_event)
@@ -316,18 +347,25 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         }
 
     async def invoke_llm(self, event: dict[str, Any]) -> str:
-        """Call LLM with SOUL.md persona. Returns reply string only — never sends.
+        """Call LLM via Hermes-auth auxiliary_client. Returns reply string only — never sends.
 
-        Plan B path: ``LLM_PRIMARY_PATH = "openai_direct"`` (W1.3 contract).
-        AsyncOpenAI + SOUL.md as system prompt — no Hermes core involvement.
+        Uses the Hermes-auth credential chain (codex/nous/openrouter) via
+        ``get_async_text_auxiliary_client``. SOUL.md is injected as the system
+        prompt; the inbound thread text becomes the user message body.
+        Raises ``RuntimeError`` when no auxiliary client is available, and
+        ``ValueError`` when the LLM returns an empty/null response.
         """
-        from openai import AsyncOpenAI  # pyright: ignore[reportMissingImports]
+        client, model = get_async_text_auxiliary_client("sns_addict_reply")
+        if client is None:
+            raise RuntimeError(
+                "No auxiliary client available — check hermes auth"
+            )
 
         soul_path = Path.home() / ".hermes" / "SOUL.md"
         soul_content = soul_path.read_text(encoding="utf-8") if soul_path.exists() else ""
-        client = AsyncOpenAI()
+
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[
                 {"role": "system", "content": soul_content},
                 {"role": "user", "content": str(event.get("text") or "")},
@@ -335,7 +373,10 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             max_tokens=300,
             temperature=0.8,
         )
-        return response.choices[0].message.content or ""
+        reply = response.choices[0].message.content
+        if not reply:
+            raise ValueError("LLM returned empty/null response")
+        return reply
 
     async def halt(self, reason: str) -> None:
         """Mark state as halted (HaltNow / identity-canary path)."""
@@ -348,7 +389,26 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         logger.warning("SnsAddictAdapter halted: %s", reason)
 
     async def _watch_state(self) -> None:
-        """Poll state.json every 5 s; act on dashboard ``active``/``stopped``/``halted`` signals."""
+        """Poll state.json every 5 s; act on dashboard ``active``/``stopped``/``halted`` signals.
+
+        On startup, an immediate read precedes the polling loop so that an
+        already-``active`` state.json is honored without a 5 s delay.
+        """
+        try:
+            state = await STATE_STORE.read()
+            if state.session_state == "active" and not self.is_connected:
+                logger.info(
+                    "state_transition",
+                    extra={
+                        "from_state": "unknown",
+                        "to_state": "active",
+                        "action": "connect",
+                    },
+                )
+                await self.connect()
+        except Exception as exc:
+            logger.debug("state watcher initial read error: %s", exc)
+
         last_mtime: Optional[float] = None
         while True:
             await asyncio.sleep(5)
@@ -362,15 +422,26 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                 last_mtime = mtime
                 state = await STATE_STORE.read()
                 if state.session_state == "active" and not self.is_connected:
-                    logger.info("state watcher: 'active' signal — connecting")
+                    logger.info(
+                        "state_transition",
+                        extra={
+                            "from_state": "inactive",
+                            "to_state": "active",
+                            "action": "connect",
+                        },
+                    )
                     await self.connect()
                 elif (
                     state.session_state in ("stopped", "halted")
                     and self.is_connected
                 ):
                     logger.info(
-                        "state watcher: '%s' signal — disconnecting",
-                        state.session_state,
+                        "state_transition",
+                        extra={
+                            "from_state": "active",
+                            "to_state": state.session_state,
+                            "action": "disconnect",
+                        },
                     )
                     await self.disconnect()
             except asyncio.CancelledError:

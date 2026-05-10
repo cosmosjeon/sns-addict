@@ -13,3 +13,9 @@
 - FastAPI TestClient needs `httpx` installed in the venv; otherwise dashboard route tests fail at collection.
 - For persistence round-trips, set `pending_sends[*].queued_at` far enough in the future to avoid `_age_pending_sends()` mutating the payload.
 - `StateStore.read()` corruption recovery renames the bad file to `*.json.corrupt-<ts>` and returns a fresh `State`.
+
+# 2026-05-10 (W1.1 — TDD red phase for invoke_llm)
+- Mock target `sns_addict.adapter.get_async_text_auxiliary_client` doesn't exist yet, so `unittest.mock.patch` raises `AttributeError` at `__enter__` — pytest reports this as FAILED (not ERROR), which satisfies the red-phase contract.
+- `Path.home()` is monkeypatchable via `monkeypatch.setattr(Path, "home", lambda: tmp_path)` — no need to touch HOME env or pwd.
+- `pyproject.toml` sets `asyncio_mode = "auto"`, so `@pytest.mark.asyncio` is technically redundant; kept for explicitness per spec.
+- `_build_response` helper pattern: nested MagicMocks for `.choices[0].message.content`, with `chat.completions.create` as `AsyncMock` returning the response.
