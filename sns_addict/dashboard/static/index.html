@@ -44,6 +44,7 @@
           </header>
           <dl class="kv">
             <dt>state</dt><dd id="kv-state">—</dd>
+            <dt>mode</dt><dd id="kv-mode">—</dd>
             <dt>mood</dt><dd id="kv-mood">—</dd>
             <dt>since</dt><dd id="kv-since">—</dd>
             <dt>f3 mode</dt><dd id="kv-f3">off</dd>
@@ -56,6 +57,15 @@
               <span class="btn-glyph">■</span> Stop
             </button>
             <button type="button" id="btn-refresh" class="btn btn-link" onclick="loadStatus()" title="Refresh status">↻</button>
+          </div>
+          <div class="mode-controls">
+            <label class="small muted" for="runtime-mode">Runtime mode</label>
+            <select id="runtime-mode" onchange="setRuntimeMode(this.value)">
+              <option value="observe">observe-only</option>
+              <option value="approval">approval queue</option>
+              <option value="autopilot_lite">autopilot-lite</option>
+              <option value="stopped">stopped</option>
+            </select>
           </div>
         </article>
 
@@ -84,6 +94,16 @@
           </div>
         </article>
       </div>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Approval queue</h2>
+          <button type="button" class="btn btn-link" onclick="loadApprovalQueue()">refresh</button>
+        </header>
+        <ul id="approval-list" class="approval-list">
+          <li class="empty muted small">No proposed replies.</li>
+        </ul>
+      </article>
 
       <details class="advanced">
         <summary>

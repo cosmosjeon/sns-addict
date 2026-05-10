@@ -19,6 +19,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
+    if (v === null || v === undefined || v === false) continue;
     if (k === "class") node.className = v;
     else if (k === "dataset") Object.assign(node.dataset, v);
     else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
@@ -85,6 +86,7 @@ async function loadStatus() {
 function renderStatus(data) {
   const pill  = $("#session-pill");
   const stateEl = $("#kv-state");
+  const modeEl = $("#kv-mode");
   const mood  = $("#kv-mood");
   const since = $("#kv-since");
   const f3    = $("#kv-f3");
@@ -93,6 +95,7 @@ function renderStatus(data) {
     pill.textContent = "offline";
     pill.className = "pill pill-idle";
     stateEl.textContent = "—";
+    modeEl.textContent  = "—";
     mood.textContent   = "—";
     since.textContent  = "—";
     f3.textContent     = "—";
@@ -100,21 +103,44 @@ function renderStatus(data) {
   }
 
   const s = data.session_state || "unknown";
+  const mode = data.runtime_mode || "stopped";
   pill.textContent = s;
   pill.className   = "pill " + (s === "active" ? "pill-active" : (s === "stopped" ? "pill-stopped" : "pill-idle"));
 
   stateEl.textContent = s;
+  modeEl.textContent  = mode;
   mood.textContent   = data.current_mood || "—";
   since.textContent  = fmtTime(data.since);
   f3.textContent     = data.f3_mode ? "ON" : "off";
 
   const toggle = $("#f3-toggle");
   if (toggle && toggle.checked !== !!data.f3_mode) toggle.checked = !!data.f3_mode;
+  const modeSelect = $("#runtime-mode");
+  if (modeSelect && modeSelect.value !== mode) modeSelect.value = mode;
   $("#f3-banner").classList.toggle("hidden", !data.f3_mode);
 
   if (data.since && !state.startedAt) state.startedAt = data.since;
   $("#stat-uptime").textContent = (s === "active") ? fmtDuration(state.startedAt || data.since) : "—";
   $("#stats-stamp").textContent = fmtTime(Date.now() / 1000);
+}
+
+async function setRuntimeMode(mode) {
+  try {
+    const res = await fetch(`${API_BASE}/api/control/mode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`HTTP ${res.status}: ${detail}`);
+    }
+    await loadStatus();
+    await loadApprovalQueue();
+  } catch (err) {
+    flashError(`Mode 변경 실패: ${err.message}`);
+    await loadStatus();
+  }
 }
 
 async function startSession() {
@@ -151,7 +177,10 @@ async function stopSession() {
 
 function schedulePolling() {
   if (state.pollTimer) clearInterval(state.pollTimer);
-  state.pollTimer = setInterval(loadStatus, POLL_MS);
+  state.pollTimer = setInterval(() => {
+    loadStatus();
+    loadApprovalQueue();
+  }, POLL_MS);
 }
 
 function showGatewayBanner() {
@@ -186,6 +215,78 @@ async function loadAllowlist() {
     $("#stat-friends").textContent = String(list.length);
   } catch (err) {
     showAllowlistError(`Allowlist load 실패: ${err.message}`);
+  }
+}
+
+async function loadApprovalQueue() {
+  try {
+    const res = await fetch(`${API_BASE}/api/control/approval_queue`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderApprovalQueue(data.items || []);
+  } catch (err) {
+    console.warn("approval queue fetch failed:", err);
+  }
+}
+
+function renderApprovalQueue(items) {
+  const ul = $("#approval-list");
+  if (!ul) return;
+  const visible = items.filter((item) => ["proposed", "approved", "sending", "failed"].includes(item.status));
+  ul.innerHTML = "";
+  if (!visible.length) {
+    ul.appendChild(el("li", { class: "empty muted small" }, "No proposed replies."));
+    return;
+  }
+  for (const item of visible) {
+    const approveDisabled = item.status !== "proposed";
+    const rejectDisabled = !["proposed", "approved", "failed"].includes(item.status);
+    ul.appendChild(el("li", { class: "approval-item" }, [
+      el("div", { class: "approval-main" }, [
+        el("div", { class: "approval-meta" }, [
+          el("span", { class: "chip" }, item.status || "proposed"),
+          el("span", { class: "muted small" }, item.thread_id || item.thread_id_hash || "unknown"),
+          el("span", { class: "muted small" }, fmtTime(item.queued_at)),
+        ]),
+        el("div", { class: "approval-reply" }, item.proposed_reply || ""),
+      ]),
+      el("div", { class: "approval-actions" }, [
+        el("button", {
+          class: "btn btn-primary",
+          disabled: approveDisabled ? "disabled" : null,
+          onclick: () => approveProposal(item.id),
+        }, "approve"),
+        el("button", {
+          class: "btn btn-ghost",
+          disabled: rejectDisabled ? "disabled" : null,
+          onclick: () => rejectProposal(item.id),
+        }, "reject"),
+      ]),
+    ]));
+  }
+}
+
+async function approveProposal(id) {
+  await updateProposal(id, "approve");
+}
+
+async function rejectProposal(id) {
+  await updateProposal(id, "reject");
+}
+
+async function updateProposal(id, action) {
+  try {
+    const res = await fetch(`${API_BASE}/api/control/approval_queue/${encodeURIComponent(id)}/${action}`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`HTTP ${res.status}: ${detail}`);
+    }
+    await loadApprovalQueue();
+    await loadStatus();
+  } catch (err) {
+    flashError(`Queue ${action} 실패: ${err.message}`);
   }
 }
 
@@ -449,6 +550,7 @@ async function init() {
   initF3Controls();
   await loadStatus();
   await loadAllowlist();
+  await loadApprovalQueue();
   ensureWebSocket();
   schedulePolling();
 
@@ -464,7 +566,11 @@ document.addEventListener("DOMContentLoaded", init);
 window.startSession  = startSession;
 window.stopSession   = stopSession;
 window.loadStatus    = loadStatus;
+window.setRuntimeMode = setRuntimeMode;
 window.addFriend     = addFriend;
 window.removeFriend  = removeFriend;
+window.loadApprovalQueue = loadApprovalQueue;
+window.approveProposal = approveProposal;
+window.rejectProposal = rejectProposal;
 window.toggleF3Mode  = toggleF3Mode;
 window.clearEvents   = clearEvents;

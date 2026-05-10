@@ -18,9 +18,12 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from sns_addict.persistence.events import append_event
+from sns_addict.persistence.allowlist import AllowlistStore
+from sns_addict.persistence.state import RuntimeMode, StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +56,21 @@ class InboundLoop:
         await loop.stop()
     """
 
-    def __init__(self, adapter: Any, guardrails: GuardrailsBundle, humanizer: Any) -> None:
+    def __init__(
+        self,
+        adapter: Any,
+        guardrails: GuardrailsBundle,
+        humanizer: Any,
+        state_store: StateStore | None = None,
+        allowlist_store: AllowlistStore | None = None,
+    ) -> None:
         self._adapter = adapter
         self._guardrails = guardrails
         self._humanizer = humanizer
+        self._state_store = state_store if state_store is not None else StateStore()
+        self._allowlist_store = (
+            allowlist_store if allowlist_store is not None else AllowlistStore()
+        )
         self._inbound_tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 
@@ -124,10 +138,65 @@ class InboundLoop:
         ts: float = event.get("ts", time.time())
 
         try:
-            # Step 1 — identity canary (ALWAYS FIRST)
+            runtime_mode = await self._runtime_mode()
+            if runtime_mode == "stopped":
+                await append_event(
+                    "inbound_ignored_runtime_mode",
+                    runtime_mode=runtime_mode,
+                    thread_id_hash=_hash_thread(thread_id),
+                    text=text,
+                )
+                return
+
+            if runtime_mode == "observe":
+                await append_event(
+                    "inbound_observed",
+                    runtime_mode=runtime_mode,
+                    thread_id_hash=_hash_thread(thread_id),
+                    text=text,
+                )
+                return
+
+            # Step 1 — identity canary (first for send-capable modes only).
             if self._guardrails.canary.matches(text):
                 logger.warning("Identity canary hit for thread %s", thread_id)
-                await self._guardrails.canary.handle(event, self._adapter)
+                canonical_reply = str(
+                    getattr(self._guardrails.canary, "CANONICAL_REPLY", "뭐래 ㅋㅋ")
+                )
+                if runtime_mode == "approval":
+                    await self._enqueue_proposal(event, canonical_reply, runtime_mode)
+                    await append_event(
+                        "identity_canary_proposed",
+                        thread_id_hash=_hash_thread(thread_id),
+                    )
+                    return
+                if runtime_mode == "autopilot_lite" and not await self._autopilot_allowed(event):
+                    await self._enqueue_proposal(event, canonical_reply, runtime_mode)
+                    await append_event(
+                        "identity_canary_autopilot_blocked",
+                        thread_id_hash=_hash_thread(thread_id),
+                    )
+                    return
+                latest_mode = await self._runtime_mode()
+                if latest_mode != "autopilot_lite":
+                    if latest_mode == "approval":
+                        await self._enqueue_proposal(event, canonical_reply, latest_mode)
+                        await append_event(
+                            "identity_canary_proposed",
+                            thread_id_hash=_hash_thread(thread_id),
+                        )
+                    else:
+                        await append_event(
+                            "inbound_ignored_runtime_mode",
+                            runtime_mode=latest_mode,
+                            thread_id_hash=_hash_thread(thread_id),
+                            text=text,
+                        )
+                    return
+                await self._guardrails.canary.handle(
+                    SimpleNamespace(thread_id=thread_id),
+                    self._adapter,
+                )
                 return
 
             # Step 2 — quiet hours
@@ -157,16 +226,48 @@ class InboundLoop:
                 return
 
             # Step 6 — volume cap
-            if self._guardrails.volume.exceeded(thread_id):
+            if await self._guardrails.volume.exceeded(thread_id):
                 logger.info("Volume cap exceeded for thread %s", thread_id)
                 await append_event("guard_block", reason="volume_cap", thread_id=thread_id)
                 return
 
-            # Step 7 — send
-            await self._adapter.send(thread_id, reply)
+            # Step 7 — send or queue depending on the latest runtime mode.
+            # Re-read immediately before any side effect; the user may have switched
+            # to observe/stopped while thinking or LLM generation was in flight.
+            latest_mode = await self._runtime_mode()
+            if latest_mode == "approval":
+                await self._enqueue_proposal(event, reply, latest_mode)
+                return
+
+            if latest_mode == "autopilot_lite":
+                allowed = await self._autopilot_allowed(event)
+                if not allowed:
+                    await self._enqueue_proposal(event, reply, latest_mode)
+                    return
+                latest_mode = await self._runtime_mode()
+                if latest_mode != "autopilot_lite":
+                    if latest_mode == "approval":
+                        await self._enqueue_proposal(event, reply, latest_mode)
+                    else:
+                        await append_event(
+                            "inbound_ignored_runtime_mode",
+                            runtime_mode=latest_mode,
+                            thread_id_hash=_hash_thread(thread_id),
+                            text=text,
+                        )
+                    return
+                await self._adapter.send(thread_id, reply)
+            else:
+                await append_event(
+                    "inbound_ignored_runtime_mode",
+                    runtime_mode=latest_mode,
+                    thread_id_hash=_hash_thread(thread_id),
+                    text=text,
+                )
+                return
 
             # Post-send bookkeeping
-            self._guardrails.volume.record(thread_id)
+            await self._guardrails.volume.record(thread_id)
             self._guardrails.dedup.record(thread_id, reply)
             self._guardrails.loop_detector.record_turn(thread_id)
 
@@ -186,3 +287,112 @@ class InboundLoop:
                 thread_id=thread_id,
                 error=str(exc),
             )
+
+    async def _runtime_mode(self) -> RuntimeMode:
+        state = await self._state_store.read()
+        if state.session_state in ("stopped", "halted", "challenge_pending"):
+            return "stopped"
+        return state.runtime_mode
+
+    async def _autopilot_allowed(self, event: dict[str, Any]) -> bool:
+        thread_id = str(event.get("thread_id") or "")
+        if not thread_id:
+            return False
+
+        chat_type_raw = event.get("chat_type") or event.get("type")
+        chat_type = str(chat_type_raw or "").lower()
+        is_group = bool(event.get("is_group")) or chat_type in {"group", "group_dm"}
+        if is_group or chat_type != "dm":
+            await append_event(
+                "autopilot_lite_blocked",
+                reason="not_one_on_one",
+                thread_id_hash=_hash_thread(thread_id),
+            )
+            return False
+
+        username = _event_username(event)
+        if not username:
+            await append_event(
+                "autopilot_lite_blocked",
+                reason="missing_username",
+                thread_id_hash=_hash_thread(thread_id),
+            )
+            return False
+
+        allowlist = await self._allowlist_store.read()
+        usernames = {_normalize_username(friend.username) for friend in allowlist.friends}
+        if _normalize_username(username) not in usernames:
+            await append_event(
+                "autopilot_lite_blocked",
+                reason="not_allowlisted",
+                thread_id_hash=_hash_thread(thread_id),
+            )
+            return False
+
+        return True
+
+    async def _enqueue_proposal(
+        self,
+        event: dict[str, Any],
+        reply: str,
+        runtime_mode: RuntimeMode,
+    ) -> None:
+        thread_id = str(event.get("thread_id") or "unknown")
+        message_id = str(event.get("message_id") or "")
+        proposal_id = _proposal_id(thread_id, message_id, reply)
+        now = time.time()
+
+        async def _add_proposal(state: Any) -> Any:
+            for item in state.pending_sends:
+                if item.get("id") == proposal_id:
+                    return state
+            state.pending_sends.append(
+                {
+                    "id": proposal_id,
+                    "status": "proposed",
+                    "source": "inbound",
+                    "thread_id": thread_id,
+                    "thread_id_hash": _hash_thread(thread_id),
+                    "message_id": message_id,
+                    "inbound_text_hash": _hash_text(str(event.get("text") or "")),
+                    "proposed_reply": reply,
+                    "runtime_mode": runtime_mode,
+                    "queued_at": now,
+                }
+            )
+            return state
+
+        await self._state_store.update(_add_proposal)
+        await append_event(
+            "reply_proposed",
+            proposal_id=proposal_id,
+            runtime_mode=runtime_mode,
+            thread_id_hash=_hash_thread(thread_id),
+        )
+
+
+def _event_username(event: dict[str, Any]) -> str:
+    """Extract the Instagram username shape used by the allowlist UI."""
+    for key in ("username", "sender_username", "participant_username", "from_username"):
+        value = str(event.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_username(username: str) -> str:
+    return username.strip().lstrip("@").lower()
+
+
+def _hash_thread(thread_id: str) -> str:
+    return hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:16]
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _proposal_id(thread_id: str, message_id: str, reply: str) -> str:
+    return hashlib.sha256(
+        f"{thread_id}:{message_id}:{reply}".encode("utf-8")
+    ).hexdigest()[:16]

@@ -20,6 +20,8 @@ STATE_PATH = Path.home() / ".hermes" / "sns-addict" / "state.json"
 
 PENDING_LOST_SEC = 300  # mark sends pending > 5 min as lost (legacy adapter:567-577)
 
+RuntimeMode = Literal["observe", "approval", "autopilot_lite", "stopped"]
+
 
 class SendCounters(BaseModel):
     day_window_start: float = Field(default_factory=time.time)
@@ -41,6 +43,7 @@ class State(BaseModel):
     session_state: Literal[
         "active", "paused", "stopped", "halted", "challenge_pending"
     ] = "stopped"
+    runtime_mode: RuntimeMode = "stopped"
     halt_reason: str | None = None
     f3_mode: bool = False
     alerts: list[dict[str, Any]] = Field(default_factory=list)
@@ -69,6 +72,7 @@ class StateStore:
             async with aiofiles.open(self._path, "r", encoding="utf-8") as f:
                 raw = await f.read()
             data = json.loads(raw)
+            data = _normalize_state_data(data)
             state = State(**data)
         except Exception as exc:
             ts = int(time.time())
@@ -112,3 +116,20 @@ class StateStore:
             if now - queued_at > PENDING_LOST_SEC:
                 send["status"] = "lost"
         return state
+
+
+def _normalize_state_data(data: Any) -> dict[str, Any]:
+    """Normalize legacy state.json into the explicit runtime-mode model."""
+    if not isinstance(data, dict):
+        return {}
+
+    normalized = dict(data)
+    runtime_mode = normalized.get("runtime_mode")
+    if runtime_mode == "autopilot-lite":
+        normalized["runtime_mode"] = "autopilot_lite"
+    elif runtime_mode not in {"observe", "approval", "autopilot_lite", "stopped"}:
+        session_state = normalized.get("session_state", "stopped")
+        normalized["runtime_mode"] = (
+            "approval" if session_state in {"active", "paused"} else "stopped"
+        )
+    return normalized

@@ -31,6 +31,7 @@ async def test_state_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             per_friend_day={"alice": 1},
         ),
         session_state="active",
+        runtime_mode="autopilot_lite",
         halt_reason="none",
         f3_mode=True,
     )
@@ -39,6 +40,22 @@ async def test_state_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     loaded = await store.read()
 
     assert loaded.model_dump() == state.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_state_legacy_active_maps_to_approval_mode(tmp_path: Path) -> None:
+    from sns_addict.persistence.state import StateStore
+
+    store = StateStore(tmp_path / "state.json")
+    store._path.write_text(
+        json.dumps({"version": 1, "session_state": "active"}),
+        encoding="utf-8",
+    )
+
+    loaded = await store.read()
+
+    assert loaded.session_state == "active"
+    assert loaded.runtime_mode == "approval"
 
 
 @pytest.mark.asyncio
@@ -80,6 +97,7 @@ async def test_state_corruption_recovery(tmp_path: Path, monkeypatch: pytest.Mon
     assert loaded.version == 1
     assert loaded.current_mood == "평타"
     assert loaded.session_state == "stopped"
+    assert loaded.runtime_mode == "stopped"
     assert loaded.last_seen_msg_id is None
     assert loaded.pending_sends == []
     assert loaded.frozen_threads == []

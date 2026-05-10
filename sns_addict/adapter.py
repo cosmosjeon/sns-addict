@@ -9,7 +9,7 @@ DOM Observer fires → ``_on_dom_event`` returns < 50 ms by spawning a task →
 ``_process_inbound`` reads thread context → dispatches to InboundLoop.
 
 State watcher polls ``state.json`` every 5 s (dashboard ↔ adapter IPC):
-``active`` → ``connect()`` ; ``stopped``/``halted`` → ``disconnect()``.
+``active``/safe runtime modes → ``connect()`` ; ``stopped``/``halted`` → ``disconnect()``.
 
 ``f3_mode`` defaults to False (privacy). When True, plaintext replies are
 appended to ``replies-f3.jsonl`` (voice_score.py compatible).
@@ -171,6 +171,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._refresh_task: Optional[asyncio.Task[None]] = None
         self._soul_task: Optional[asyncio.Task[None]] = None
         self._state_watcher_task: Optional[asyncio.Task[None]] = None
+        self._approval_sender_task: Optional[asyncio.Task[None]] = None
         self._auto_stop_task: Optional[asyncio.Task[None]] = None
         self._sleep_recovery_task: Optional[asyncio.Task[None]] = None
 
@@ -269,6 +270,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         self._soul_task = asyncio.create_task(watch_soul_md())
         self._auto_stop_task = asyncio.create_task(AutoStop(self).watch())
         self._sleep_recovery_task = asyncio.create_task(SleepRecovery(self).watch())
+        self._approval_sender_task = asyncio.create_task(self._watch_approved_sends())
         await STATE_STORE.update(_set_session_active)
         self._mark_connected()
         logger.info("SnsAddictAdapter connected")
@@ -284,6 +286,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             self._soul_task,
             self._auto_stop_task,
             self._sleep_recovery_task,
+            self._approval_sender_task,
         ):
             if task is not None and not task.done():
                 task.cancel()
@@ -302,6 +305,96 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             self._session = None
         await STATE_STORE.update(_set_session_stopped)
         logger.info("SnsAddictAdapter disconnected")
+
+    async def _watch_approved_sends(self) -> None:
+        """Poll approval queue and dispatch user-approved replies only."""
+        while True:
+            await asyncio.sleep(2)
+            try:
+                state = await STATE_STORE.read()
+                if state.session_state != "active" or state.runtime_mode not in {
+                    "approval",
+                    "autopilot_lite",
+                }:
+                    continue
+                item = await self._claim_approved_send()
+                if item is None:
+                    continue
+                proposal_id = str(item.get("id") or "")
+                thread_id = str(item.get("thread_id") or "")
+                proposed_reply = str(item.get("proposed_reply") or "")
+                if not thread_id or not proposed_reply:
+                    await self._complete_approved_send(
+                        proposal_id,
+                        SendResult(
+                            success=False,
+                            error="approved proposal missing thread_id or proposed_reply",
+                            retryable=False,
+                        ),
+                    )
+                    continue
+                state = await STATE_STORE.read()
+                if state.session_state != "active" or state.runtime_mode not in {
+                    "approval",
+                    "autopilot_lite",
+                }:
+                    await self._restore_approved_send(proposal_id)
+                    continue
+                result = await self.send(thread_id, proposed_reply)
+                await self._complete_approved_send(proposal_id, result)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("approved send watcher error: %s", exc)
+
+    async def _claim_approved_send(self) -> dict[str, Any] | None:
+        claimed: dict[str, Any] | None = None
+
+        async def _claim(state: State) -> State:
+            nonlocal claimed
+            for item in state.pending_sends:
+                if item.get("status") == "approved":
+                    item["status"] = "sending"
+                    item["sending_at"] = time.time()
+                    claimed = dict(item)
+                    break
+            return state
+
+        await STATE_STORE.update(_claim)
+        return claimed
+
+    async def _restore_approved_send(self, proposal_id: str) -> None:
+        async def _restore(state: State) -> State:
+            for item in state.pending_sends:
+                if item.get("id") == proposal_id and item.get("status") == "sending":
+                    item["status"] = "approved"
+                    item.pop("sending_at", None)
+                    break
+            return state
+
+        await STATE_STORE.update(_restore)
+
+    async def _complete_approved_send(self, proposal_id: str, result: SendResult) -> None:
+        async def _complete(state: State) -> State:
+            for item in state.pending_sends:
+                if item.get("id") == proposal_id:
+                    item["status"] = "sent" if result.success else "failed"
+                    item["completed_at"] = time.time()
+                    if result.message_id:
+                        item["sent_message_id"] = result.message_id
+                    if result.error:
+                        item["error"] = result.error
+                    if result.success:
+                        _record_send_counter(state, str(item.get("thread_id") or ""))
+                    break
+            return state
+
+        await STATE_STORE.update(_complete)
+        await append_event(
+            "approved_reply_sent" if result.success else "approved_reply_failed",
+            proposal_id=proposal_id,
+            error=result.error,
+        )
 
     def _on_dom_event(self, event: dict[str, Any]) -> None:
         """DOM Observer callback — must return in < 50 ms (no awaits)."""
@@ -349,6 +442,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         if last.get("is_self"):
             return
         text = str(last.get("text") or "")
+        metadata = await _read_thread_metadata(self._session.page)
         msg_event: dict[str, Any] = {
             "thread_id": thread_id,
             "text": text,
@@ -356,6 +450,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
             "message_id": hashlib.sha256(
                 f"{thread_id}{text}".encode("utf-8")
             ).hexdigest()[:16],
+            **metadata,
         }
         await self._inbound_loop.on_inbound(msg_event)
 
@@ -482,14 +577,14 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
         logger.warning("SnsAddictAdapter halted: %s", reason)
 
     async def _watch_state(self) -> None:
-        """Poll state.json every 5 s; act on dashboard ``active``/``stopped``/``halted`` signals.
+        """Poll state.json every 5 s; act on dashboard state/runtime-mode signals.
 
         On startup, an immediate read precedes the polling loop so that an
         already-``active`` state.json is honored without a 5 s delay.
         """
         try:
             state = await STATE_STORE.read()
-            if state.session_state == "active" and not self.is_connected:
+            if _should_connect(state) and not self.is_connected:
                 logger.info(
                     "state_transition",
                     extra={
@@ -514,7 +609,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                     continue
                 last_mtime = mtime
                 state = await STATE_STORE.read()
-                if state.session_state == "active" and not self.is_connected:
+                if _should_connect(state) and not self.is_connected:
                     logger.info(
                         "state_transition",
                         extra={
@@ -525,7 +620,7 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                     )
                     await self.connect()
                 elif (
-                    state.session_state in ("stopped", "halted")
+                    _should_disconnect(state)
                     and self.is_connected
                 ):
                     logger.info(
@@ -543,8 +638,89 @@ class SnsAddictAdapter(BasePlatformAdapter):  # pyright: ignore[reportGeneralTyp
                 logger.debug("state watcher error: %s", exc)
 
 
+def _record_send_counter(state: State, thread_id: str) -> None:
+    if not thread_id:
+        return
+    c = state.send_counters
+    now = time.time()
+    day_window_seconds = 24 * 60 * 60
+    hour_window_seconds = 60 * 60
+    if now - c.day_window_start > day_window_seconds:
+        c.day_window_start = now
+        c.day_count = 0
+        c.per_friend_day = {}
+        c.per_friend_hour = {}
+    c.day_count += 1
+    c.per_friend_day[thread_id] = c.per_friend_day.get(thread_id, 0) + 1
+    hour_list = [t for t in c.per_friend_hour.get(thread_id, []) if now - t < hour_window_seconds]
+    hour_list.append(now)
+    c.per_friend_hour[thread_id] = hour_list
+
+
+async def _read_thread_metadata(page: Any) -> dict[str, Any]:
+    """Best-effort explicit 1:1/username metadata for autopilot-lite gating."""
+    try:
+        raw = await page.evaluate(
+            """
+            () => {
+                const main = document.querySelector('[role="main"]') || document.body;
+                const header = main?.querySelector('header') || main;
+                const labels = Array.from(header.querySelectorAll('h1,h2,h3,a,span'))
+                    .map((el) => (el.textContent || '').trim())
+                    .filter(Boolean)
+                    .filter((txt) => txt.length >= 2 && txt.length <= 80);
+                const seen = [];
+                for (const label of labels) {
+                    if (!seen.includes(label)) seen.push(label);
+                }
+                const title = seen[0] || '';
+                const joined = seen.join(' ');
+                const isGroup = /,| and | 외 |명|members|participants|group/i.test(title)
+                    || /members|participants|group/i.test(joined);
+                const usernames = [];
+                for (const anchor of Array.from(header.querySelectorAll('a[href]'))) {
+                    try {
+                        const url = new URL(anchor.getAttribute('href'), window.location.origin);
+                        if (url.origin !== window.location.origin) continue;
+                        const parts = url.pathname.split('/').filter(Boolean);
+                        if (parts.length !== 1) continue;
+                        const username = parts[0];
+                        if ([
+                            'accounts', 'direct', 'explore', 'p', 'reel', 'stories',
+                            'about', 'developer', 'privacy', 'terms'
+                        ].includes(username)) continue;
+                        if (/^[A-Za-z0-9._]{1,30}$/.test(username) && !usernames.includes(username)) {
+                            usernames.push(username);
+                        }
+                    } catch (_) {}
+                }
+                return { title, is_group: !!isGroup, usernames };
+            }
+            """
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("thread metadata read failed: %s", exc)
+        return {}
+
+    title = str(raw.get("title") or "").strip() if isinstance(raw, dict) else ""
+    is_group = bool(raw.get("is_group")) if isinstance(raw, dict) else False
+    usernames_raw = raw.get("usernames") if isinstance(raw, dict) else None
+    usernames = [
+        str(username).strip()
+        for username in (usernames_raw if isinstance(usernames_raw, list) else [])
+        if str(username).strip()
+    ]
+    if is_group:
+        return {"chat_type": "group", "is_group": True}
+    if len(usernames) == 1:
+        return {"chat_type": "dm", "username": usernames[0], "is_group": False}
+    return {"chat_type": "unknown", "is_group": False, "title": title}
+
+
 def _set_session_active(state: State) -> State:
     state.session_state = "active"
+    if state.runtime_mode == "stopped":
+        state.runtime_mode = "approval"
     state.halt_reason = None
     return state
 
@@ -552,6 +728,16 @@ def _set_session_active(state: State) -> State:
 def _set_session_stopped(state: State) -> State:
     state.session_state = "stopped"
     return state
+
+
+def _should_connect(state: State) -> bool:
+    if state.session_state in {"stopped", "halted", "challenge_pending"}:
+        return False
+    return state.runtime_mode in {"observe", "approval", "autopilot_lite"}
+
+
+def _should_disconnect(state: State) -> bool:
+    return state.session_state in {"stopped", "halted"} or state.runtime_mode == "stopped"
 
 
 def create_adapter(cfg: PlatformConfig) -> SnsAddictAdapter:

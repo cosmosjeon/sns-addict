@@ -56,6 +56,17 @@ class ActiveBehavior:
         logger.info("active_dm attempt thread=%s", thread_short)
 
         state = await self._state_store.read()
+        if getattr(state, "runtime_mode", "stopped") != "autopilot_lite":
+            logger.info(
+                "active_dm blocked (runtime_mode=%s) thread=%s",
+                getattr(state, "runtime_mode", "unknown"),
+                thread_short,
+            )
+            return False
+
+        # Runtime modes are safety-first: autopilot-lite may auto-reply to
+        # allowlisted inbound 1:1 chats, but it must not initiate new
+        # conversations on its own.
         if state.current_mood == QUIET_MOOD:
             logger.info("active_dm blocked (mood=밤) thread=%s", thread_short)
             return False
@@ -70,7 +81,5 @@ class ActiveBehavior:
             logger.info("active_dm blocked (volume_cap) thread=%s", thread_short)
             return False
 
-        await adapter.send(thread_id, content)
-        await self._volume_cap.record(thread_id)
-        logger.info("active_dm sent thread=%s len=%d", thread_short, len(content))
-        return True
+        logger.info("active_dm blocked (unsolicited_first_message) thread=%s", thread_short)
+        return False

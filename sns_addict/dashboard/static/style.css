@@ -285,6 +285,12 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 }
 
 .controls { display: flex; gap: var(--s-2); align-items: center; }
+.mode-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
 
 .btn {
   display: inline-flex;
@@ -351,6 +357,34 @@ input[type="text"]::placeholder { color: var(--text-3); }
 
 .friend-list {
   border-top: 1px solid var(--border);
+}
+.approval-list {
+  border-top: 1px solid var(--border);
+}
+.approval-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--s-3);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+.approval-meta,
+.approval-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.approval-reply {
+  margin-top: var(--s-2);
+  white-space: pre-wrap;
+}
+.chip {
+  padding: 1px 6px;
+  background: var(--bg-subtle);
+  border-radius: 3px;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--text-3);
 }
 .friend-item {
   display: grid;
